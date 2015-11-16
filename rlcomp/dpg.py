@@ -49,7 +49,8 @@ def critic_model(inp, actions, mdp, spec, name="critic", reuse=None,
 
 class DPG(object):
 
-  def __init__(self, mdp, spec, inputs, q_targets, tau, noiser=None):
+  def __init__(self, mdp, spec, inputs, q_targets, tau, noiser=None,
+               name="dpg"):
     """
     Args:
       mdp:
@@ -71,8 +72,11 @@ class DPG(object):
     self.q_targets = q_targets
     self.tau = tau
 
-    self._make_graph()
-    self._make_updates()
+    with tf.variable_scope("dpg") as vs:
+      self._vs = vs
+      self._make_graph()
+      self._make_objectives()
+      self._make_updates()
 
   def _make_graph(self):
     # Build main model: actor
@@ -92,6 +96,23 @@ class DPG(object):
     self.critic_on_track = critic_model(self.inputs, self.a_pred, self.mdp,
                                         self.spec, name="critic_track",
                                         track_scope="critic")
+
+  def _make_objectives(self):
+    with tf.variable_scope("policy", reuse=True) as policy_vs:
+      policy_params = [var for var in tf.all_variables()
+                       if var.name.startswith(policy_vs.name + "/")]
+    with tf.variable_scope("critic", reuse=True) as critic_vs:
+      critic_params = [var for var in tf.all_variables()
+                       if var.name.startswith(critic_vs.name + "/")]
+    self.policy_params = policy_params
+    self.critic_params = critic_params
+
+    # Policy objective: maximize on-policy critic activations
+    self.policy_objective = -tf.reduce_mean(self.critic_on)
+
+    # Critic objective: minimize MSE of off-policy Q-value predictions
+    q_errors = tf.square(self.critic_off - self.q_targets)
+    self.critic_objective = tf.reduce_mean(q_errors)
 
   def _make_updates(self):
     # Make tracking updates.
