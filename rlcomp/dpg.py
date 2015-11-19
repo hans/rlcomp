@@ -3,6 +3,10 @@ Implementation of a deep deterministic policy gradient RL learner.
 Roughly follows algorithm described in Lillicrap et al. (2015).
 """
 
+from functools import partial
+
+import tensorflow as tf
+
 from rlcomp import util
 
 
@@ -49,8 +53,8 @@ def critic_model(inp, actions, mdp, spec, name="critic", reuse=None,
 
 class DPG(object):
 
-  def __init__(self, mdp, spec, inputs, q_targets, tau, noiser=None,
-               name="dpg"):
+  def __init__(self, mdp, spec, inputs=None, q_targets=None, tau=None,
+               noiser=None, name="dpg"):
     """
     Args:
       mdp:
@@ -62,9 +66,10 @@ class DPG(object):
     if noiser is None:
       # TODO remove magic number
       noiser = partial(noise_gaussian, stddev=0.1)
+    self.noiser = noiser
 
     # Hyperparameters
-    self.mdp = mdp
+    self.mdp_spec = mdp
     self.spec = spec
 
     # Inputs
@@ -72,30 +77,43 @@ class DPG(object):
     self.q_targets = q_targets
     self.tau = tau
 
-    with tf.variable_scope("dpg") as vs:
+    self.name = name
+
+    with tf.variable_scope(self.name) as vs:
       self._vs = vs
+
+      self._make_inputs()
       self._make_graph()
       self._make_objectives()
       self._make_updates()
 
+  def _make_inputs(self):
+    self.inputs = (self.inputs
+                   or tf.placeholder(tf.float32, (None, self.mdp_spec.state_dim),
+                                     name="inputs"))
+    self.q_targets = (self.q_targets
+                      or tf.placeholder(tf.float32, (None,), name="q_targets"))
+    self.tau = self.tau or tf.placeholder(tf.float32, (1,), name="tau")
+
   def _make_graph(self):
     # Build main model: actor
-    self.a_pred = policy_model(self.inputs, self.mdp, self.spec,
+    self.a_pred = policy_model(self.inputs, self.mdp_spec, self.spec,
                                name="policy")
-    self.a_explore = noiser(self.inputs, self.a_pred)
+    self.a_explore = self.noiser(self.inputs, self.a_pred)
 
     # Build main model: critic (on- and off-policy)
-    self.critic_on = critic_model(self.inputs, self.a_pred, self.mdp,
+    self.critic_on = critic_model(self.inputs, self.a_pred, self.mdp_spec,
                                   self.spec, name="critic")
-    self.critic_off = critic_model(self.inputs, self.a_explore, self.mdp,
+    self.critic_off = critic_model(self.inputs, self.a_explore, self.mdp_spec,
                                    self.spec, name="critic", reuse=True)
 
     # Build tracking models.
-    self.a_pred_track = policy_model(self.inputs, self.mdp, self.spec,
-                                     name="policy_track", track_scope="policy")
-    self.critic_on_track = critic_model(self.inputs, self.a_pred, self.mdp,
+    self.a_pred_track = policy_model(self.inputs, self.mdp_spec, self.spec,
+                                     track_scope="%s/policy" % self.name,
+                                     name="policy_track")
+    self.critic_on_track = critic_model(self.inputs, self.a_pred, self.mdp_spec,
                                         self.spec, name="critic_track",
-                                        track_scope="critic")
+                                        track_scope="%s/critic" % self.name)
 
   def _make_objectives(self):
     with tf.variable_scope("policy", reuse=True) as policy_vs:
@@ -116,10 +134,10 @@ class DPG(object):
 
   def _make_updates(self):
     # Make tracking updates.
-    policy_track_update = util.track_model_updates("policy", "policy_track",
-                                                   self.tau)
-    critic_track_update = util.track_model_updates("critic", "critic_track",
-                                                   self.tau)
+    policy_track_update = util.track_model_updates(
+         "%s/policy" % self.name, "%s/policy_track" % self.name, self.tau)
+    critic_track_update = util.track_model_updates(
+        "%s/critic" % self.name, "%s/critic_track" % self.name, self.tau)
     self.track_update = tf.group(policy_track_update, critic_track_update)
 
     # SGD updates are left to client.

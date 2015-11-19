@@ -1,11 +1,12 @@
 from collections import namedtuple
 
+import numpy as np
 import tensorflow as tf
 from tensorflow.python.ops.variable_scope import _VariableScope # HACK
 
 
 # MDP specification
-MDP = namedtuple("MDP", ["state_dim", "action_dim"])
+MDPSpec = namedtuple("MDPSpec", ["state_dim", "action_dim"])
 
 
 # DPG model specification
@@ -51,7 +52,8 @@ def track_model_updates(main_name, track_name, tau):
   for param in params:
     track_param_name = param.op.name.replace(main_name + "/",
                                              track_name + "/")
-    track_param = tf.get_variable(track_param_name)
+    with tf.variable_scope(_VariableScope(True), reuse=True):
+      track_param = tf.get_variable(track_param_name)
 
     # TODO sparse params
     update_op = tf.assign(track_param,
@@ -76,13 +78,13 @@ def mlp(inp, inp_dim, outp_dim, track_scope=None, hidden=None, f=tf.tanh,
   for i, (src_dim, tgt_dim) in enumerate(zip(layer_dims, layer_dims[1:])):
     Wi_name, bi_name = "W%i" % i, "b%i" % i
 
-    Wi = ((track_scope and track_variable(Wi_name, track_scope))
+    Wi = ((track_scope and match_variable(Wi_name, track_scope))
           or tf.get_variable("W%i" % i, (src_dim, tgt_dim)))
     x = tf.matmul(x, Wi)
 
     final_layer = i == len(layer_dims) - 2
     if not final_layer or bias_output:
-      bi = ((track_scope and track_variable(bi_name, track_scope))
+      bi = ((track_scope and match_variable(bi_name, track_scope))
             or tf.get_variable("b%i" % i, (tgt_dim,),
                                initializer=tf.zeros_initializer))
       x += bi
@@ -99,7 +101,7 @@ class ReplayBuffer(object):
   Experience replay storage, defined relative to an MDP.
 
   Stores experience tuples `(s_t, a_t, r_t, s_{t+1})` in a fixed-size cyclic
-  buffer and randomly samples from this buffer on demand.
+  buffer and randomly samples tuples from this buffer on demand.
   """
 
   def __init__(self, buffer_size, mdp):
