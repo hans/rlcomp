@@ -6,6 +6,7 @@ Roughly follows algorithm described in Lillicrap et al. (2015).
 from functools import partial
 
 import tensorflow as tf
+from tensorflow.models.rnn import rnn, rnn_cell, seq2seq
 
 from rlcomp import util
 
@@ -22,7 +23,7 @@ def policy_model(inp, mdp, spec, name="policy", reuse=None,
   # TODO remove magic numbers
   with tf.variable_scope(name, reuse=reuse,
                          initializer=tf.truncated_normal_initializer(stddev=0.5)):
-    return util.mlp(inp, mdp.state_dim, mdp.action_dim,
+    return util.mlp(inp, tf.shape(inp)[1], mdp.action_dim,
                     hidden=spec.policy_dims, track_scope=track_scope)
 
 
@@ -141,3 +142,157 @@ class DPG(object):
     self.track_update = tf.group(policy_track_update, critic_track_update)
 
     # SGD updates are left to client.
+
+
+class RecurrentDPG(DPG):
+
+  """
+  DPG sequence model.
+
+  This recurrent DPG is recurrent over both an input sequence and the actual
+  policy / decision process. It accepts an input token sequence (a sequence of
+  `batch_size * input_dim` tensors) and encodes this sequence using an RNN. Let
+  $e$ refer to this encoded sequence representation. Then it computes a rollout
+  using a recurrent deterministic policy $\pi(e, h_{t-1})$, where $h_{t-1}$ is
+  some hidden representation computed in the recurrence.
+  """
+
+  def __init__(self, mdp, spec, input_dim, vocab_size, seq_length, **kwargs):
+    super(RecurrentDPG, self).__init__(mdp, spec, **kwargs)
+
+    self.input_dim = input_dim
+    self.vocab_size = vocab_size
+    self.seq_length = seq_length
+
+  def _make_inputs(self):
+    self.inputs = (self.inputs
+                   or [tf.placeholder(tf.int32, (None, self.input_dim),
+                                      name="inputs_%t" % t)
+                       for t in range(self.seq_length)])
+    self.q_targets = (self.q_targets
+                      or [tf.placeholder(tf.float32, (None,),
+                                         name="q_targets_%t" % t)
+                          for t in range(self.seq_length)])
+    # TODO design choice: should we update on an entire trajectory like
+    # sketched out above? Or just accept q_targets for particular timesteps
+    # to avoid too heavily correlated batches?
+    self.tau = self.tau or tf.placeholder(tf.float32, (1,), name="tau")
+
+  class PolicyRNNCell(rnn_cell.RNNCell):
+
+    """
+    Simple MLP policy.
+
+    Maps from decoder hidden state to continuous action space using a basic
+    feedforward neural network.
+    """
+
+    def __init__(self, encoder_seq, cell, dpg):
+      self._encoder_seq = encoder_seq
+
+      self._cell = cell
+      self._dpg = dpg
+
+    @property
+    def input_size(self):
+      return self._cell.input_size
+
+    @property
+    def output_size(self):
+      return self._dpg.mdp_spec.action_dim
+
+    @property
+    def state_size(self):
+      return self._cell.state_size
+
+    def __call__(self, inputs, state, scope=None):
+      # Run the wrapped cell.
+      output, res_state = self._cell(inputs, state)
+
+      with tf.variable_scope(scope or type(self).__name__):
+        actions = policy_model(output, self._dpg.mdp_spec)
+
+      return actions, res_state
+
+  def _make_graph(self):
+    # Encode sequence.
+    encoder_cell = rnn_cell.GRUCell(self.spec.policy_dims[0])
+    encoder_cell = rnn_cell.EmbeddingWrapper(cell, self.vocab_size)
+    _, encoder_states = rnn.rnn(cell, self.inputs)
+    # Omit initial state.
+    self.encoder_states = encoder_states[1:]
+    # DEV
+    assert len(self.encoder_states) == self.seq_length
+
+    decoder_cell = rnn_cell.GRUCell(self.spec.policy_dims[0])
+    decoder_cell = self._policy_cell(self.encoder_states, decoder_cell)
+
+    # Prepare dummy decoder inputs.
+    input_shape = tf.pack([tf.shape(self.inputs[0])[0],
+                           decoder_cell.input_size])
+    decoder_inputs = [tf.zeros(input_shape, dtype=tf.float32)
+                      for _ in range(self.seq_length)]
+
+    # Build decoder loop function which maps from decoder outputs / policy
+    # actions to decoder inputs.
+    loop_function = self._loop_function(self.encoder_states)
+
+    self.a_pred, self.decoder_states = seq2seq.rnn_decoder(
+        decoder_inputs, self.encoder_states[-1], decoder_cell,
+        loop_function=loop_function)
+
+    # DEV
+    assert len(self.decoder_states) == len(self.encoder_states)
+
+    self.a_explore = self.noiser(self.inputs, self.a_pred)
+
+    # Build main model: critic (on- and off-policy)
+    self.critic_on = self._critic(self.decoder_states, self.a_pred)
+    self.critic_off = self._critic(self.decoder_states, self.a_explore,
+                                   reuse=True)
+
+  def _policy_cell(self, decoder_cell):
+    """
+    Build a policy RNN cell wrapper around the given decoder cell.
+
+    Args:
+      decoder_cell: An `RNNCell` instance which implements the hidden-layer
+        recurrence of the decoder / policy
+
+    Returns:
+      An `RNNCell` instance which wraps `decoder_cell` and produces outputs in
+      action-space.
+    """
+    # By default, use a simple MLP policy.
+    return self.PolicyRNNCell(self.encoder_states, decoder_cell, self)
+
+  def _loop_function(self):
+    """
+    Build a function which maps from decoder outputs to decoder inputs.
+
+    Returns:
+      A function which accepts two arguments `output_t, t`. `output_t` is a
+      `batch_size * action_dim` tensor and `t` is an integer.
+    """
+    raise NotImplementedError("abstract method")
+
+  def _critic(self, states_list, actions_list, reuse=None):
+    scores = []
+    for t, (states_t, actions_t) in enumerate(zip(states_list, actions_list)):
+      reuse_t = (reuse or t > 0) or None
+      scores.append(critic_model(self.states_t, actions_t, self.mdp_spec,
+                                 self.spec, name="critic", reuse=reuse_t))
+
+    return scores
+
+  def harden_actions(self, action_list):
+    """
+    Harden the given sequence of soft actions such that they describe a
+    concrete trajectory.
+
+    Args:
+      action_list: List of Numpy matrices of shape `batch_size * action_dim`
+    """
+    # TODO: eventually we'd like to run this within a TF graph when possible.
+    # We can probably define hardening solely with TF
+    raise NotImplementedError("abstract method")
