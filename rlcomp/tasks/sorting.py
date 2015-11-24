@@ -13,6 +13,10 @@ from rlcomp.dpg import RecurrentDPG
 flags = tf.flags
 FLAGS = flags.FLAGS
 
+# Data parameters
+flags.DEFINE_integer("seq_length", 5, "")
+flags.DEFINE_integer("vocab_size", 10, "")
+
 flags.DEFINE_string("policy_dims", "20", "")
 flags.DEFINE_string("critic_dims", "", "")
 
@@ -38,11 +42,11 @@ class SortingDPG(RecurrentDPG):
     states.
     """
     def loop_fn(output_t, t):
-      # output_t is already a softmax value.
-      # TODO: true?
-      weighted_inputs = self.encoder_states * tf.expand_dims(output_t, 2)
-      processed = tf.reduce_sum(weighted_inputs, 1)
-      return processed
+      return self.inputs
+#      output_t = tf.nn.softmax(output_t)
+#      weighted_inputs = self.encoder_states * tf.expand_dims(output_t, 2)
+#      processed = tf.reduce_sum(weighted_inputs, 1)
+#      return processed
 
     return loop_fn
 
@@ -57,20 +61,17 @@ class SortingDPG(RecurrentDPG):
       # calc_rewards sticks with the same contract as we are.
       ret_t = actions_t.argmax(axis=1)
       ret.append(ret_t)
-    return ret
+    return np.array(ret)
 
 
-def calc_rewards(dpg, input_seq, actions):
+def calc_rewards(dpg, xs, inputs, actions):
   rewards = []
-  seq_length = len(input_seq)
-  batch_size = input_seq[0].shape[0]
-
-  actions = np.array(actions)
-  assert actions.shape == (batch_size, seq_length) # DEV
+  actions = dpg.harden_actions(actions).T
+  batch_size, seq_length = actions.shape
 
   # "Dereference" the predicted sorts, which are index sequences.
   row_idxs = np.arange(batch_size).reshape((-1, 1)).repeat(seq_length, axis=1)
-  predicted = input_seq[row_idxs, actions]
+  predicted = xs[row_idxs, actions]
 
   # Compute per-timestep rewards by evaluating constraint violations.
   rewards = (predicted[:, 1:] > predicted[:, :-1]).astype(np.int)
@@ -80,36 +81,110 @@ def calc_rewards(dpg, input_seq, actions):
   return rewards
 
 
-def run_episode(input_seq, dpg, policy, buffer=None)
+def run_episode(xs, inputs, dpg, policy, buffer=None):
   sess = tf.get_default_session()
 
   # TODO eventually this should just trigger an assign op on shared data
   # rather than a transfer of data back to TF client
-  ret = sess.run(policy + dpg.encoder_states + dpg.decoder_states,
-                 {dpg.inputs: input_seq})
+  ret = sess.run(policy + dpg.decoder_states,
+                 {dpg.inputs: inputs})
   actions = ret[:dpg.seq_length]
-  input_enc = ret[dpg.seq_length:dpg.seq_length * 2]
-  decoder_states = ret[dpg.seq_length * 2:dpg.seq_length * 3]
+  decoder_states = ret[dpg.seq_length:]
 
   # Calculate reward for all timesteps.
   # TODO: Run this as part of the TF graph when possible. (i.e., whenever
   # environment dynamics can be feasibly simulated in TF)
-  rewards = calc_rewards(dpg, input_seq, actions)
+  rewards = calc_rewards(dpg, xs, inputs, actions)
 
   if buffer is not None:
-    buffer.add_trajectory(input_seq, decoder_states, actions, rewards)
+    buffer.add_trajectory(inputs, decoder_states, actions, rewards)
 
 
 def train_batch(dpg, policy_update, critic_update, buffer):
   sess = tf.get_default_session()
 
-  # Sample a training minibatch.
-  try:
-    input_seq, states, actions, rewards = \
-        buffer.sample_trajectory()
-  except ValueError:
-    # Not enough data. Keep collecting trajectories.
-    return 0.0
+  b_inputs, b_states, b_states_next, b_actions, b_rewards = \
+      buffer.sample(FLAGS.batch_size)
 
-  # Compute targets (TD error backups) given current Q function.
+  # Compute Q_next for all sampled tuples
+  q_next = sess.run(dpg.critic_on,
+                    {dpg.inputs: b_inputs,
+                     dpg.decoder_state_ind: b_states_next})
 
+  b_targets = b_rewards + FLAGS.gamma * q_next.flatten()
+
+  # Policy update.
+  sess.run(policy_update, {dpg.inputs: b_inputs,
+                           dpg.decoder_state_ind: b_states})
+
+  # Critic update.
+  cost_t, _ = sess.run(
+      [dpg.critic_objective, critic_update],
+      {dpg.inputs: b_inputs, dpg.decoder_state_ind: b_states,
+       dpg.q_targets: b_targets})
+
+  return cost_t
+
+
+def build_updates(dpg):
+  policy_optim = tf.train.MomentumOptimizer(FLAGS.policy_lr, FLAGS.momentum)
+  policy_update = policy_optim.minimize(dpg.policy_objective,
+                                        var_list=dpg.policy_params)
+
+  critic_optim = tf.train.MomentumOptimizer(FLAGS.critic_lr, FLAGS.momentum)
+  critic_update = critic_optim.minimize(dpg.critic_objective,
+                                        var_list=dpg.critic_params)
+
+  return policy_update, critic_update
+
+
+def gen_inputs():
+  xs = np.random.choice(FLAGS.vocab_size, replace=False, size=FLAGS.seq_length)
+  inputs = np.zeros((FLAGS.seq_length * FLAGS.vocab_size))
+
+  for i, x in enumerate(xs):
+    inputs[i * FLAGS.vocab_size + x] = 1
+
+  return xs, inputs
+
+
+def train(dpg, policy_update, critic_update, replay_buffer):
+  sess = tf.get_default_session()
+
+  for t in xrange(FLAGS.num_iter):
+    print t
+
+    # Sample a trajectory off-policy.
+    xs, inputs = gen_inputs()
+    xs, inputs = xs[np.newaxis, :], inputs[np.newaxis, :]
+    run_episode(xs, inputs, dpg, dpg.a_explore, replay_buffer)
+
+    # Update the actor and critic.
+    cost_t = train_batch(dpg, policy_update, critic_update, replay_buffer)
+
+    # TODO eval
+
+
+def main(unused_args):
+  FLAGS.policy_dims = [int(x) for x in filter(None, FLAGS.policy_dims.split(","))]
+  FLAGS.critic_dims = [int(x) for x in filter(None, FLAGS.critic_dims.split(","))]
+
+  mdp_spec = util.MDPSpec(FLAGS.policy_dims[-1], FLAGS.seq_length)
+  dpg_spec = util.DPGSpec(FLAGS.policy_dims, FLAGS.critic_dims)
+
+  input_dim = FLAGS.seq_length * FLAGS.vocab_size
+
+  dpg = SortingDPG(mdp_spec, dpg_spec, input_dim, FLAGS.vocab_size,
+                   FLAGS.seq_length)
+  policy_update, critic_update = build_updates(dpg)
+  replay_buffer = util.RecurrentReplayBuffer(
+      FLAGS.buffer_size, mdp_spec, input_dim, FLAGS.seq_length,
+      FLAGS.policy_dims[-1])
+
+  with tf.Session() as sess:
+    sess.run(tf.initialize_all_variables())
+    train(dpg, policy_update, critic_update, replay_buffer)
+
+
+if __name__ == "__main__":
+  tf.app.run()

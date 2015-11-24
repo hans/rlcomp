@@ -153,36 +153,42 @@ class DPG(object):
 class RecurrentDPG(DPG):
 
   """
-  DPG sequence model.
+  Abstract DPG sequence model.
 
-  This recurrent DPG is recurrent over both an input sequence and the actual
-  policy / decision process. It accepts an input token sequence (a sequence of
-  `batch_size * input_dim` tensors) and encodes this sequence using an RNN. Let
-  $e$ refer to this encoded sequence representation. Then it computes a rollout
-  using a recurrent deterministic policy $\pi(e, h_{t-1})$, where $h_{t-1}$ is
-  some hidden representation computed in the recurrence.
+  This recurrent DPG is recurrent over the policy / decision process, but not
+  the input. This is in accord with most "recurrent" RL policies. This DPG can
+  be made effectively recurrent over input if the state of some input
+  recurrence is provided as the MDP state representation.
+
+  With some input representation `batch_size * input_dim`, this class computes
+  a rollout using a recurrent deterministic policy $\pi(inp, h_{t-1})$, where
+  $h_{t-1}$ is some hidden representation computed in the recurrence.
+
+  Concrete subclasses must implement environment dynamics *within TF* using
+  the method `_loop_function`. This method describes subsequent decoder inputs
+  given a decoder output (i.e., a policy output).
   """
 
   def __init__(self, mdp, spec, input_dim, vocab_size, seq_length, **kwargs):
-    super(RecurrentDPG, self).__init__(mdp, spec, **kwargs)
-
     self.input_dim = input_dim
     self.vocab_size = vocab_size
     self.seq_length = seq_length
 
+    super(RecurrentDPG, self).__init__(mdp, spec, **kwargs)
+
   def _make_inputs(self):
     self.inputs = (self.inputs
-                   or [tf.placeholder(tf.int32, (None, self.input_dim),
-                                      name="inputs_%t" % t)
-                       for t in range(self.seq_length)])
+                   or tf.placeholder(tf.float32, (None, self.input_dim),
+                                     name="inputs"))
     self.q_targets = (self.q_targets
-                      or [tf.placeholder(tf.float32, (None,),
-                                         name="q_targets_%t" % t)
-                          for t in range(self.seq_length)])
-    # TODO design choice: should we update on an entire trajectory like
-    # sketched out above? Or just accept q_targets for particular timesteps
-    # to avoid too heavily correlated batches?
+                      or tf.placeholder(tf.float32, (None,), name="q_targets"))
     self.tau = self.tau or tf.placeholder(tf.float32, (1,), name="tau")
+
+    # HACK: Provide inputs for single steps in recurrence.
+    self.decoder_state_ind = tf.placeholder(
+        tf.float32, (None, self.spec.policy_dims[0]), name="dec_state_ind")
+    self.decoder_action_ind = tf.placeholder(
+        tf.float32, (None, self.mdp_spec.action_dim), name="dec_action_ind")
 
   class PolicyRNNCell(rnn_cell.RNNCell):
 
@@ -193,9 +199,7 @@ class RecurrentDPG(DPG):
     feedforward neural network.
     """
 
-    def __init__(self, encoder_seq, cell, dpg):
-      self._encoder_seq = encoder_seq
-
+    def __init__(self, cell, dpg):
       self._cell = cell
       self._dpg = dpg
 
@@ -216,46 +220,60 @@ class RecurrentDPG(DPG):
       output, res_state = self._cell(inputs, state)
 
       with tf.variable_scope(scope or type(self).__name__):
-        actions = policy_model(output, self._dpg.mdp_spec)
+        actions = policy_model(output, self._dpg.mdp_spec, self._dpg.spec)
 
       return actions, res_state
 
   def _make_graph(self):
-    # Encode sequence.
-    encoder_cell = rnn_cell.GRUCell(self.spec.policy_dims[0])
-    encoder_cell = rnn_cell.EmbeddingWrapper(cell, self.vocab_size)
-    _, encoder_states = rnn.rnn(cell, self.inputs)
-    # Omit initial state.
-    self.encoder_states = encoder_states[1:]
-    # DEV
-    assert len(self.encoder_states) == self.seq_length
-
     decoder_cell = rnn_cell.GRUCell(self.spec.policy_dims[0])
-    decoder_cell = self._policy_cell(self.encoder_states, decoder_cell)
+    decoder_cell = self._policy_cell(decoder_cell)
 
     # Prepare dummy decoder inputs.
-    input_shape = tf.pack([tf.shape(self.inputs[0])[0],
-                           decoder_cell.input_size])
+    batch_size = tf.shape(self.inputs)[0]
+    input_shape = tf.pack([batch_size, self.input_dim])
     decoder_inputs = [tf.zeros(input_shape, dtype=tf.float32)
                       for _ in range(self.seq_length)]
+    # Force-set second dimenson of dec_inputs
+    for dec_inp in decoder_inputs:
+      dec_inp.set_shape((None, self.input_dim))
 
     # Build decoder loop function which maps from decoder outputs / policy
     # actions to decoder inputs.
-    loop_function = self._loop_function(self.encoder_states)
+    loop_function = self._loop_function()
+
+    # TODO custom init state? Certainly necessary for seq2seq
+    init_state = tf.zeros(tf.pack([batch_size, decoder_cell.state_size]))
+    init_state.set_shape((None, decoder_cell.state_size))
 
     self.a_pred, self.decoder_states = seq2seq.rnn_decoder(
-        decoder_inputs, self.encoder_states[-1], decoder_cell,
+        decoder_inputs, init_state, decoder_cell,
         loop_function=loop_function)
-
-    # DEV
-    assert len(self.decoder_states) == len(self.encoder_states)
+    # Drop init state.
+    self.decoder_states = self.decoder_states[1:]
 
     self.a_explore = self.noiser(self.inputs, self.a_pred)
 
     # Build main model: critic (on- and off-policy)
-    self.critic_on = self._critic(self.decoder_states, self.a_pred)
-    self.critic_off = self._critic(self.decoder_states, self.a_explore,
+    self.critic_on_seq = self._critic(self.decoder_states, self.a_pred)
+    self.critic_off_seq = self._critic(self.decoder_states, self.a_explore,
                                    reuse=True)
+
+    # Build helper for predicting Q-value in an isolated state (not part of a
+    # larger recurrence)
+    a_pred_ind, _ = decoder_cell(self.inputs, self.decoder_state_ind)
+    a_explore_ind = self.noiser(self.inputs, a_pred_ind)
+    self.critic_on = critic_model(self.decoder_state_ind,
+                                  a_pred_ind,
+                                  self.mdp_spec, self.spec,
+                                  name="critic", reuse=True)
+    self.critic_off = critic_model(self.decoder_state_ind,
+                                   a_explore_ind, self.mdp_spec,
+                                   self.spec, name="critic",
+                                   reuse=True)
+
+  def _make_updates(self):
+    # TODO support tracking model
+    pass
 
   def _policy_cell(self, decoder_cell):
     """
@@ -270,7 +288,7 @@ class RecurrentDPG(DPG):
       action-space.
     """
     # By default, use a simple MLP policy.
-    return self.PolicyRNNCell(self.encoder_states, decoder_cell, self)
+    return self.PolicyRNNCell(decoder_cell, self)
 
   def _loop_function(self):
     """
@@ -286,7 +304,7 @@ class RecurrentDPG(DPG):
     scores = []
     for t, (states_t, actions_t) in enumerate(zip(states_list, actions_list)):
       reuse_t = (reuse or t > 0) or None
-      scores.append(critic_model(self.states_t, actions_t, self.mdp_spec,
+      scores.append(critic_model(states_t, actions_t, self.mdp_spec,
                                  self.spec, name="critic", reuse=reuse_t))
 
     return scores

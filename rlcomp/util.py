@@ -117,9 +117,9 @@ class ReplayBuffer(object):
     self.states_next = np.empty_like(self.states)
 
   def sample(self, batch_size):
-    if len(self.states) - 1 < batch_size:
+    if self.cursor_read_end - 1 < batch_size:
       raise ValueError("Not enough examples in buffer (just %i) to fill a batch of %i."
-               % (len(self.states), batch_size))
+               % (self.cursor_read_end, batch_size))
 
     idxs = np.random.choice(self.cursor_read_end, size=batch_size, replace=False)
     return (self.states[idxs], self.actions[idxs], self.rewards[idxs],
@@ -144,3 +144,69 @@ class ReplayBuffer(object):
     self.states_next[self.cursor_write_start:len(states)] = states_next
 
     self.cursor_read_end = min(self.buffer_size, self.cursor_read_end + len(states))
+
+
+class RecurrentReplayBuffer(object):
+
+  def __init__(self, buffer_size, mdp, input_dim, seq_length, policy_dim):
+    self.buffer_size = buffer_size
+    self.mdp = mdp
+
+    self.cursor_write_start = 0
+    self.cursor_read_end = 0
+
+    self.inputs = np.empty((buffer_size, input_dim), dtype=np.float32)
+    self.states = np.empty((buffer_size, seq_length, policy_dim),
+                           dtype=np.float32)
+    self.actions = np.empty((buffer_size, seq_length, mdp.action_dim),
+                            dtype=np.float32)
+    self.rewards = np.empty((buffer_size, seq_length), dtype=np.int32)
+
+  def sample_trajectory(self):
+    if self.cursor_read_end == 0:
+      raise ValueError("not enough trajectories in buffer (just %i) to fill a "
+                       "batch of %i." % (self.cursor_read_end, 1))
+
+    i = np.random.randint(0, self.cursor_read_end)
+    return self.inputs[i], self.states[i], self.actions[i], self.rewards[i]
+
+  def add_trajectory(self, inputs, states, actions, rewards):
+    self.inputs[self.cursor_write_start] = inputs
+    self.states[self.cursor_write_start] = states
+    self.actions[self.cursor_write_start] = actions
+    self.rewards[self.cursor_write_start] = rewards
+
+    self.cursor_write_start += 1
+    self.cursor_write_start = self.cursor_write_start % self.buffer_size
+
+    self.cursor_read_end = min(self.buffer_size, self.cursor_read_end + 1)
+
+  def sample(self, batch_size):
+    b_inputs, b_states, b_states_next, b_actions, b_rewards = \
+        [], [], [], [], []
+
+    for _ in range(batch_size):
+      inputs, states, actions, rewards = self.sample_trajectory()
+
+      # Sample a single timestep.
+      t = np.random.randint(0, states.shape[0])
+      state, action, reward = states[t], actions[t], rewards[t]
+      try:
+        state_next = states[t + 1]
+      except IndexError:
+        # TODO hack.
+        state_next = np.zeros((self.mdp.state_dim), dtype=np.float32)#0.0
+
+      b_inputs.append(inputs)
+      b_states.append(state)
+      b_states_next.append(state_next)
+      b_actions.append(action)
+      b_rewards.append(reward)
+
+    b_inputs = np.array(b_inputs)
+    b_states = np.array(b_states)
+    b_states_next = np.array(b_states_next)
+    b_actions = np.array(b_actions)
+    b_rewards = np.array(b_rewards)
+
+    return b_inputs, b_states, b_states_next, b_actions, b_rewards
