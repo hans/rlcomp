@@ -27,8 +27,13 @@ def policy_model(inp, mdp, spec, name="policy", reuse=None,
 
 
 def noise_gaussian(inp, actions, stddev, name="noiser"):
-    noise = tf.random_normal(tf.shape(actions), 0, stddev)
-    return actions + noise
+  # Support list `actions` argument.
+  if isinstance(actions, list):
+    return [noise_gaussian(inp, actions_t, stddev, name=name)
+            for actions_t in actions]
+
+  noise = tf.random_normal(tf.shape(actions), 0, stddev)
+  return actions + noise
 
 
 def critic_model(inp, actions, mdp, spec, name="critic", reuse=None,
@@ -116,12 +121,13 @@ class DPG(object):
                                         track_scope="%s/critic" % self.name)
 
   def _make_objectives(self):
-    with tf.variable_scope("policy", reuse=True) as policy_vs:
-      policy_params = [var for var in tf.all_variables()
-                       if var.name.startswith(policy_vs.name + "/")]
-    with tf.variable_scope("critic", reuse=True) as critic_vs:
-      critic_params = [var for var in tf.all_variables()
-                       if var.name.startswith(critic_vs.name + "/")]
+    # TODO: Hacky, will cause clashes if multiple DPG instances.
+    # Can't instantiate a VS cleanly either, because policy params might be
+    # nested in unpredictable way by subclasses.
+    policy_params = [var for var in tf.all_variables()
+                     if "policy/" in var.name]
+    critic_params = [var for var in tf.all_variables()
+                     if "critic/" in var.name]
     self.policy_params = policy_params
     self.critic_params = critic_params
 
