@@ -97,7 +97,10 @@ def run_episode(xs, inputs, dpg, policy, buffer=None):
   rewards = calc_rewards(dpg, xs, inputs, actions)
 
   if buffer is not None:
-    buffer.add_trajectory(inputs, decoder_states, actions, rewards)
+    decoder_states = np.array(decoder_states).swapaxes(0, 1)
+    actions = np.array(actions).swapaxes(0, 1)
+    for i in range(len(xs)):
+      buffer.add_trajectory(inputs[i], decoder_states[i], actions[i], rewards[i])
 
   return decoder_states, actions, rewards
 
@@ -156,9 +159,11 @@ def train(dpg, policy_update, critic_update, replay_buffer):
   for t in xrange(FLAGS.num_iter):
     print t
 
-    # Sample a trajectory off-policy.
-    xs, inputs = gen_inputs()
-    xs, inputs = xs[np.newaxis, :], inputs[np.newaxis, :]
+    # Run a batch of N rollouts.
+    N = FLAGS.batch_size
+    batch = [gen_inputs() for _ in range(N)]
+    xs = np.array([xs for xs, _ in batch])
+    inputs = np.array([inputs for _, inputs in batch])
     run_episode(xs, inputs, dpg, dpg.a_explore, replay_buffer)
 
     # Update the actor and critic.
