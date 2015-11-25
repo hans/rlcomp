@@ -99,6 +99,8 @@ def run_episode(xs, inputs, dpg, policy, buffer=None):
   if buffer is not None:
     buffer.add_trajectory(inputs, decoder_states, actions, rewards)
 
+  return decoder_states, actions, rewards
+
 
 def train_batch(dpg, policy_update, critic_update, buffer):
   sess = tf.get_default_session()
@@ -162,7 +164,11 @@ def train(dpg, policy_update, critic_update, replay_buffer):
     # Update the actor and critic.
     cost_t = train_batch(dpg, policy_update, critic_update, replay_buffer)
 
-    # TODO eval
+    if t % FLAGS.eval_interval == 0:
+      xs, inputs = gen_inputs()
+      xs, inputs = xs[np.newaxis, :], inputs[np.newaxis, :]
+      _, _, rewards = run_episode(xs, inputs, dpg, dpg.a_pred)
+      print "\t", rewards.mean()
 
 
 def main(unused_args):
