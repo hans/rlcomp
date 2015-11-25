@@ -241,7 +241,7 @@ class RecurrentDPG(DPG):
     # actions to decoder inputs.
     loop_function = self._loop_function()
 
-    # TODO custom init state? Certainly necessary for seq2seq
+    # Build dummy initial state for decoder.
     init_state = tf.zeros(tf.pack([batch_size, decoder_cell.state_size]))
     init_state.set_shape((None, decoder_cell.state_size))
 
@@ -270,6 +270,10 @@ class RecurrentDPG(DPG):
                                    a_explore_ind, self.mdp_spec,
                                    self.spec, name="critic",
                                    reuse=True)
+
+    # DEV: monitor average activations
+    tf.scalar_summary("a_pred_ind.mean", tf.reduce_mean(a_pred_ind))
+    tf.scalar_summary("critic_on(a_pred_ind).mean", tf.reduce_mean(self.critic_on))
 
   def _make_updates(self):
     # TODO support tracking model

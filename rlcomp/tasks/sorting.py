@@ -42,11 +42,8 @@ class SortingDPG(RecurrentDPG):
     states.
     """
     def loop_fn(output_t, t):
+      # TODO maybe remove recently selected item from input vec?
       return self.inputs
-#      output_t = tf.nn.softmax(output_t)
-#      weighted_inputs = self.encoder_states * tf.expand_dims(output_t, 2)
-#      processed = tf.reduce_sum(weighted_inputs, 1)
-#      return processed
 
     return loop_fn
 
@@ -105,7 +102,7 @@ def run_episode(xs, inputs, dpg, policy, buffer=None):
   return decoder_states, actions, rewards
 
 
-def train_batch(dpg, policy_update, critic_update, buffer):
+def train_batch(dpg, policy_update, critic_update, buffer, summary_op=None):
   sess = tf.get_default_session()
 
   b_inputs, b_states, b_states_next, b_actions, b_rewards = \
@@ -123,12 +120,13 @@ def train_batch(dpg, policy_update, critic_update, buffer):
                            dpg.decoder_state_ind: b_states})
 
   # Critic update.
-  cost_t, _ = sess.run(
-      [dpg.critic_objective, critic_update],
+  cost_t, _, summary = sess.run(
+      [dpg.critic_objective, critic_update,
+       (summary_op or tf.constant(0.0))],
       {dpg.inputs: b_inputs, dpg.decoder_state_ind: b_states,
        dpg.q_targets: b_targets})
 
-  return cost_t
+  return cost_t, summary
 
 
 def build_updates(dpg):
@@ -156,6 +154,9 @@ def gen_inputs():
 def train(dpg, policy_update, critic_update, replay_buffer):
   sess = tf.get_default_session()
 
+  summary_op = tf.merge_all_summaries()
+  summary_writer = tf.train.SummaryWriter(FLAGS.logdir, sess.graph_def)
+
   for t in xrange(FLAGS.num_iter):
     print t
 
@@ -167,7 +168,10 @@ def train(dpg, policy_update, critic_update, replay_buffer):
     run_episode(xs, inputs, dpg, dpg.a_explore, replay_buffer)
 
     # Update the actor and critic.
-    cost_t = train_batch(dpg, policy_update, critic_update, replay_buffer)
+    cost_t, summary = train_batch(dpg, policy_update, critic_update,
+                                  replay_buffer, summary_op=summary_op)
+    if summary:
+      summary_writer.add_summary(summary, t)
 
     if t % FLAGS.eval_interval == 0:
       xs, inputs = gen_inputs()
