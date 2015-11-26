@@ -8,6 +8,7 @@ from functools import partial
 import tensorflow as tf
 from tensorflow.models.rnn import rnn, rnn_cell, seq2seq
 
+from rlcomp.pointer_network import ptr_net_decoder
 from rlcomp import util
 
 
@@ -88,10 +89,14 @@ class DPG(object):
     with tf.variable_scope(self.name) as vs:
       self._vs = vs
 
+      self._make_params()
       self._make_inputs()
       self._make_graph()
       self._make_objectives()
       self._make_updates()
+
+  def _make_params(self):
+    pass
 
   def _make_inputs(self):
     self.inputs = (self.inputs
@@ -308,6 +313,169 @@ class RecurrentDPG(DPG):
     scores = []
     for t, (states_t, actions_t) in enumerate(zip(states_list, actions_list)):
       reuse_t = (reuse or t > 0) or None
+      scores.append(critic_model(states_t, actions_t, self.mdp_spec,
+                                 self.spec, name="critic", reuse=reuse_t))
+
+    return scores
+
+  def harden_actions(self, action_list):
+    """
+    Harden the given sequence of soft actions such that they describe a
+    concrete trajectory.
+
+    Args:
+      action_list: List of Numpy matrices of shape `batch_size * action_dim`
+    """
+    # TODO: eventually we'd like to run this within a TF graph when possible.
+    # We can probably define hardening solely with TF
+    raise NotImplementedError("abstract method")
+
+
+class PointerNetDPG(DPG):
+
+  """
+  Sequence-to-sequence pointer network DPG implementation.
+
+  This recurrent DPG encodes an input float sequence `x1...xT` into an encoder
+  memory sequence `e1...eT`. Using a recurrent decoder, it computes hidden
+  states `d1...dT`. Combining these decoder states with an attention scan over
+  the encoder memory at each timestep, it produces an entire rollout `a1...aT`
+  (sequence of continuous action representations). The action at timestep `ai`
+  is used to compute an input to the decoder for the next timestep.
+
+  A recurrent critic model is applied to the action representation at each
+  timestep.
+  """
+
+  def __init__(self, mdp, spec, input_dim, seq_length, **kwargs):
+    self.input_dim = input_dim
+    self.seq_length = seq_length
+
+    assert mdp.state_dim == spec.policy_dims[0] + input_dim
+
+    super(PointerNetDPG, self).__init__(mdp, spec, **kwargs)
+
+  def _make_inputs(self):
+    if not self.inputs:
+      self.inputs = [tf.placeholder(tf.float32, (None, self.input_dim))
+                     for _ in range(self.seq_length)]
+    self.tau = self.tau or tf.placeholder(tf.float32, (1,), name="tau")
+
+  def _make_graph(self):
+    # Encode sequence.
+    # TODO: MultilayerRNN?
+    encoder_cell = rnn_cell.GRUCell(self.spec.policy_dims[0])
+    _, self.encoder_states = rnn.rnn(encoder_cell, self.inputs,
+                                     dtype=tf.float32, scope="encoder")
+    assert len(self.encoder_states) == self.seq_length # DEV
+
+    # Reshape encoder states into an "attention states" tensor of shape
+    # `batch_size * seq_length * policy_dim`.
+    attn_states = tf.concat(1, [tf.expand_dims(state_t, 1)
+                                for state_t in self.encoder_states])
+
+    # Build a simple GRU-powered recurrent decoder cell.
+    decoder_cell = rnn_cell.GRUCell(self.spec.policy_dims[0])
+
+    # Prepare dummy encoder input. This will only be used on the first
+    # timestep; in subsequent timesteps, the `loop_function` we provide
+    # will be used to dynamically calculate new input values.
+    batch_size = tf.shape(self.inputs[0])[0]
+    dec_inp_shape = tf.pack([batch_size, decoder_cell.input_size])
+    dec_inp_dummy = tf.zeros(dec_inp_shape, dtype=tf.float32)
+    dec_inp_dummy.set_shape((None, decoder_cell.input_size))
+    dec_inp = [dec_inp_dummy] * self.seq_length
+
+    # Build pointer-network decoder.
+    self.a_pred, dec_states, dec_inputs = ptr_net_decoder(
+        dec_inp, self.encoder_states[-1], attn_states, decoder_cell,
+        loop_function=self._loop_function(), scope="decoder")
+    # Store dynamically calculated inputs -- critic may want to use these
+    self.decoder_inputs = dec_inputs
+    # Again strip the initial state.
+    self.decoder_states = dec_states[1:]
+
+    # Use noiser to build exploratory rollouts.
+    self.a_explore = self.noiser(self.inputs, self.a_pred)
+
+    # Build main model: recurrently apply a critic over the entire rollout.
+    self.critic_on = self._critic(self.a_pred)
+    self.critic_off = self._critic(self.a_explore, reuse=True)
+
+    self._make_q_targets()
+
+    # TODO add some summaries here
+
+  def _make_q_targets(self):
+    if not self.q_targets:
+      self.q_targets = [tf.placeholder(tf.float32, (None,))
+                        for _ in range(self.seq_length)]
+
+  def _policy_params(self):
+    return [var for var in tf.all_variables()
+            if "encoder/" in var.name or "decoder/" in var.name]
+
+  def _make_objectives(self):
+    # TODO: Hacky, will cause clashes if multiple DPG instances.
+    policy_params = self._policy_params()
+    critic_params = [var for var in tf.all_variables()
+                     if "critic/" in var.name]
+    self.policy_params = policy_params
+    self.critic_params = critic_params
+
+    # Policy objective: maximize on-policy critic activations
+    mean_critic_over_time = tf.add_n(self.critic_on) / self.seq_length
+    mean_critic = tf.reduce_mean(mean_critic_over_time)
+    self.policy_objective = -mean_critic
+
+    # DEV
+    tf.scalar_summary("critic(a_pred).mean", mean_critic)
+
+    # Critic objective: minimize MSE of off-policy Q-value predictions
+    q_errors = [tf.reduce_mean(tf.square(critic_off_t - q_targets_t))
+                for critic_off_t, q_targets_t
+                in zip(self.critic_off, self.q_targets)]
+    self.critic_objective = tf.add_n(q_errors) / self.seq_length
+
+  def _make_updates(self):
+    # TODO support tracking model
+    pass
+
+  def _loop_function(self):
+    """
+    Build a function which maps from decoder outputs to decoder inputs.
+
+    Returns:
+      A function which accepts two arguments `output_t, t`. `output_t` is a
+      `batch_size * action_dim` tensor and `t` is an integer.
+    """
+    # Use logits from output layer to compute a weighted sum of encoder memory
+    # elements.
+    # TODO: Can we use encoder inputs instead here?
+    attn_states = tf.concat(1, [tf.expand_dims(states_t, 1)
+                                for states_t in self.encoder_states])
+    def loop_fn(output_t, t):
+      output_t = tf.nn.softmax(output_t)
+      weighted_mems = attn_states * tf.expand_dims(output_t, 2)
+      processed = tf.reduce_sum(weighted_mems, 1)
+      return processed
+
+    return loop_fn
+
+  def _critic(self, actions_lst, reuse=None):
+    scores = []
+
+    # Here our state representation is a concatenation of 1) decoder hidden
+    # state and 2) decoder input.
+    states_lst = [tf.concat(1, [inputs_t, states_t])
+                  for inputs_t, states_t
+                  in zip(self.decoder_inputs, self.decoder_states)]
+
+    # Evaluate Q(s, a) at each timestep.
+    for t, (states_t, actions_t) in enumerate(zip(states_lst, actions_lst)):
+      reuse_t = (reuse or t > 0) or None
+
+      critic_input = tf.concat(1, [states_t, actions_t])
       scores.append(critic_model(states_t, actions_t, self.mdp_spec,
                                  self.spec, name="critic", reuse=reuse_t))
 
