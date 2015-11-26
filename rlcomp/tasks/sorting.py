@@ -13,16 +13,19 @@ from rlcomp.dpg import RecurrentDPG
 flags = tf.flags
 FLAGS = flags.FLAGS
 
+flags.DEFINE_string("logdir", "/tmp/rlcomp_sorting", "")
+
 # Data parameters
 flags.DEFINE_integer("seq_length", 5, "")
 flags.DEFINE_integer("vocab_size", 10, "")
 
+# Architecture hyperparameters
 flags.DEFINE_string("policy_dims", "20", "")
 flags.DEFINE_string("critic_dims", "", "")
 
+# Training hyperparameters
 flags.DEFINE_integer("batch_size", 64, "")
 flags.DEFINE_integer("buffer_size", 10 ** 6, "")
-
 flags.DEFINE_integer("num_iter", 1000, "")
 flags.DEFINE_integer("eval_interval", 10,
                      "Evaluate policy without exploration every $n$ "
