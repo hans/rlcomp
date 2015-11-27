@@ -437,6 +437,12 @@ class PointerNetDPG(DPG):
                 in zip(self.critic_off, self.q_targets)]
     self.critic_objective = tf.add_n(q_errors) / self.seq_length
 
+    mean_critic_off = tf.reduce_mean(tf.add_n(self.critic_off)) / self.seq_length
+    tf.scalar_summary("critic(a_explore).mean", mean_critic_off)
+
+    tf.scalar_summary("a_pred.mean", tf.reduce_mean(tf.add_n(self.a_pred)) / self.seq_length)
+    tf.scalar_summary("a_pred.maxabs", tf.reduce_max(tf.abs(tf.pack(self.a_pred))))
+
   def _make_updates(self):
     # TODO support tracking model
     pass

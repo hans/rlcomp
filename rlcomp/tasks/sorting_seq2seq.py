@@ -27,8 +27,8 @@ flags.DEFINE_string("critic_dims", "", "")
 # Training hyperparameters
 flags.DEFINE_integer("batch_size", 64, "")
 flags.DEFINE_integer("buffer_size", 10 ** 6, "")
-flags.DEFINE_integer("num_iter", 1000, "")
-flags.DEFINE_integer("eval_interval", 10,
+flags.DEFINE_integer("num_iter", 10000, "")
+flags.DEFINE_integer("eval_interval", 9999,
                      "Evaluate policy without exploration every $n$ "
                      "iterations.")
 flags.DEFINE_float("policy_lr", 0.0001, "")
@@ -101,6 +101,9 @@ class SortingDPG(PointerNetDPG):
     self.rewards = tf.concat(1, [tf.zeros((FLAGS.batch_size, 1)),
                                  rewards])
 
+    tf.scalar_summary("rewards.mean", tf.reduce_mean(self.rewards))
+    tf.scalar_summary("rewards.max", tf.reduce_max(self.rewards))
+
     return tf.unpack(tf.transpose(self.rewards), self.seq_length,
                      name="rewards")
 
@@ -116,11 +119,11 @@ class SortingDPG(PointerNetDPG):
 
 
 def build_updates(dpg):
-  policy_optim = tf.train.MomentumOptimizer(FLAGS.policy_lr, FLAGS.momentum)
+  policy_optim = tf.train.AdamOptimizer(FLAGS.policy_lr)
   policy_update = policy_optim.minimize(dpg.policy_objective,
                                         var_list=dpg.policy_params)
 
-  critic_optim = tf.train.MomentumOptimizer(FLAGS.critic_lr, FLAGS.momentum)
+  critic_optim = tf.train.AdamOptimizer(FLAGS.critic_lr)
   critic_update = critic_optim.minimize(dpg.critic_objective,
                                         var_list=dpg.critic_params)
 
