@@ -1,4 +1,6 @@
 from collections import namedtuple
+import re
+import sys
 
 import numpy as np
 import tensorflow as tf
@@ -210,3 +212,44 @@ class RecurrentReplayBuffer(object):
     b_rewards = np.array(b_rewards)
 
     return b_inputs, b_states, b_states_next, b_actions, b_rewards
+
+
+def read_flagfile():
+  """
+  Fake gflag's `flagfile` feature.
+
+  Search for a --flagfile option in `sys.argv`; if it exists; prepend items
+  from the flagfile to `sys.argv`.
+  """
+
+  flagfile_re = re.compile(r"^--flagfile=?(.*)$", re.I)
+  flagfile = None
+  remove_slice = None
+
+  # Find a flagfile arg.
+  for i, arg in enumerate(sys.argv):
+    matches = flagfile_re.findall(arg)
+    if matches:
+      if matches[0]:
+        flagfile = matches[0]
+        remove_slice = i, 1
+        break
+      elif i < len(sys.argv) - 1:
+        flagfile = sys.argv[i + 1]
+        remove_slice = i, 2
+        break
+
+  # Slice out the flagfile arg.
+  new_argv = sys.argv
+  if flagfile is None:
+    return
+  elif remove_slice is not None:
+    slice_start, slice_len = remove_slice
+    new_argv = new_argv[:slice_start] + new_argv[slice_start + slice_len:]
+
+  with open(flagfile, "r") as flagfile_f:
+    flags = [line.strip() for line in flagfile_f]
+
+  # Prepend loaded flags directly after script name
+  new_argv = new_argv[:1] + flags + new_argv[1:]
+  sys.argv = new_argv

@@ -2,6 +2,10 @@
 Easy computation task: sorting sequences of distinct discrete elements.
 """
 
+import os
+import os.path
+import pprint
+
 import numpy as np
 import tensorflow as tf
 from tensorflow.models.rnn import rnn_cell
@@ -172,6 +176,12 @@ def train(dpg, policy_update, critic_update):
 
 
 def main(unused_args):
+  try:
+    os.makedirs(FLAGS.logdir)
+  except: pass
+  with open(os.path.join(FLAGS.logdir, "flags"), "w") as flagfile:
+    pprint.pprint(FLAGS.__dict__["__flags"], flagfile)
+
   FLAGS.policy_dims = [int(x) for x in filter(None, FLAGS.policy_dims.split(","))]
   FLAGS.critic_dims = [int(x) for x in filter(None, FLAGS.critic_dims.split(","))]
 
@@ -189,4 +199,5 @@ def main(unused_args):
 
 
 if __name__ == "__main__":
+  util.read_flagfile()
   tf.app.run()

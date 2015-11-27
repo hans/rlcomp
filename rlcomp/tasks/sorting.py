@@ -205,4 +205,5 @@ def main(unused_args):
 
 
 if __name__ == "__main__":
+  util.read_flagfile()
   tf.app.run()
