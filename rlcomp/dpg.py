@@ -351,7 +351,7 @@ class PointerNetDPG(DPG):
     self.input_dim = input_dim
     self.seq_length = seq_length
 
-    assert mdp.state_dim == spec.policy_dims[0] + input_dim
+    assert mdp.state_dim == spec.policy_dims[0] * 2
 
     super(PointerNetDPG, self).__init__(mdp, spec, **kwargs)
 

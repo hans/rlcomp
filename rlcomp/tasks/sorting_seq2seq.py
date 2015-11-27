@@ -172,7 +172,7 @@ def main(unused_args):
   FLAGS.policy_dims = [int(x) for x in filter(None, FLAGS.policy_dims.split(","))]
   FLAGS.critic_dims = [int(x) for x in filter(None, FLAGS.critic_dims.split(","))]
 
-  state_dim = FLAGS.policy_dims[0] + FLAGS.embedding_dim
+  state_dim = FLAGS.policy_dims[0] * 2
   mdp_spec = util.MDPSpec(state_dim, FLAGS.seq_length)
   dpg_spec = util.DPGSpec(FLAGS.policy_dims, FLAGS.critic_dims)
 
