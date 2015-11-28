@@ -23,6 +23,9 @@ flags.DEFINE_string("logdir", "/tmp/rlcomp_sorting", "")
 flags.DEFINE_integer("seq_length", 5, "")
 flags.DEFINE_integer("vocab_size", 10, "")
 
+# Initialization hyperparameters
+flags.DEFINE_float("embedding_init_range", 0.1, "")
+
 # Architecture hyperparameters
 flags.DEFINE_integer("embedding_dim", 20, "")
 flags.DEFINE_string("policy_dims", "20", "")
@@ -59,8 +62,11 @@ class SortingDPG(PointerNetDPG):
                                      **kwargs)
 
   def _make_params(self):
-    self.embeddings = tf.get_variable("embeddings",
-                                      (self.vocab_size, self.embedding_dim))
+    embedding_init = tf.random_normal_initializer(
+        stddev=FLAGS.embedding_init_range)
+    self.embeddings = tf.get_variable(
+        "embeddings", (self.vocab_size, self.embedding_dim),
+        initializer=embedding_init)
 
   def _make_inputs(self):
     self.input_tokens = [tf.placeholder(tf.int32, (None,))
