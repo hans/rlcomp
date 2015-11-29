@@ -18,6 +18,9 @@ flags = tf.flags
 FLAGS = flags.FLAGS
 
 flags.DEFINE_string("logdir", "/tmp/rlcomp_sorting", "")
+flags.DEFINE_boolean("verbose_summaries", False,
+                    "Log very detailed summaries of parameter magnitudes, "
+                    "activations, etc.")
 
 # Data parameters
 flags.DEFINE_integer("seq_length", 5, "")
@@ -202,6 +205,9 @@ def main(unused_args):
                    FLAGS.vocab_size, FLAGS.seq_length,
                    bn_actions=FLAGS.batch_normalize_actions)
   policy_update, critic_update = build_updates(dpg)
+
+  if FLAGS.verbose_summaries:
+    util.add_histogram_summaries(set(dpg.policy_params + dpg.critic_params))
 
   with tf.Session() as sess:
     sess.run(tf.initialize_all_variables())

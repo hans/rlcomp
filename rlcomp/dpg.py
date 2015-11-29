@@ -370,9 +370,13 @@ class PointerNetDPG(DPG):
     if self.bn_actions:
       with tf.variable_scope("bn"):
         shape = (self.mdp_spec.action_dim,)
-        self.bn_beta = tf.Variable(tf.constant(0.0, shape=shape, name="beta"))
-        self.bn_gamma = tf.Variable(tf.constant(1.0, shape=shape,
-                                                name="gamma"))
+        self.bn_beta = tf.Variable(tf.constant(0.0, shape=shape), name="beta")
+        self.bn_gamma = tf.Variable(tf.constant(1.0, shape=shape),
+                                    name="gamma")
+
+        # Track avg values of the beta + gamma (scale + shift)
+        tf.scalar_summary("bn_beta.mean", tf.reduce_mean(self.bn_beta))
+        tf.scalar_summary("bn_gamma.mean", tf.reduce_mean(self.bn_gamma))
 
   def _make_inputs(self):
     if not self.inputs:

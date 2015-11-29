@@ -97,6 +97,11 @@ def mlp(inp, inp_dim, outp_dim, track_scope=None, hidden=None, f=tf.tanh,
   return x
 
 
+def add_histogram_summaries(xs):
+  for x in xs:
+    tf.histogram_summary(x.name, x)
+
+
 class ReplayBuffer(object):
 
   """
