@@ -443,8 +443,6 @@ class PointerNetDPG(DPG):
 
     self._make_q_targets()
 
-    # TODO add some summaries here
-
   def _make_q_targets(self):
     if not self.q_targets:
       self.q_targets = [tf.placeholder(tf.float32, (None,))
