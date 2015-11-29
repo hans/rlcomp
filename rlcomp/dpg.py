@@ -347,13 +347,32 @@ class PointerNetDPG(DPG):
   timestep.
   """
 
-  def __init__(self, mdp, spec, input_dim, seq_length, **kwargs):
+  def __init__(self, mdp, spec, input_dim, seq_length, bn_actions=False,
+               **kwargs):
+    """
+    Args:
+      mdp:
+      spec:
+      input_dim: Dimension of input values provided to encoder (`self.inputs`)
+      seq_length:
+      bn_actions: If true, batch-normalize action outputs.
+    """
     self.input_dim = input_dim
     self.seq_length = seq_length
+
+    self.bn_actions = bn_actions
 
     assert mdp.state_dim == spec.policy_dims[0] * 2
 
     super(PointerNetDPG, self).__init__(mdp, spec, **kwargs)
+
+  def _make_params(self):
+    if self.bn_actions:
+      with tf.variable_scope("bn"):
+        shape = (self.mdp_spec.action_dim,)
+        self.bn_beta = tf.Variable(tf.constant(0.0, shape=shape, name="beta"))
+        self.bn_gamma = tf.Variable(tf.constant(1.0, shape=shape,
+                                                name="gamma"))
 
   def _make_inputs(self):
     if not self.inputs:
@@ -395,6 +414,22 @@ class PointerNetDPG(DPG):
     # Again strip the initial state.
     self.decoder_states = dec_states[1:]
 
+    # Optional batch normalization.
+    if self.bn_actions:
+      # Compute moments over all timesteps (treat as one big batch).
+      batch_pred = tf.concat(0, self.a_pred)
+      mean, variance = tf.nn.moments(batch_pred, [0])
+
+      # TODO track running mean, avg with exponential averaging
+      # in order to prepare test-time normalization value
+
+      # Resize to make BN op happy. (It is built for 4-dim CV applications.)
+      batch_pred = tf.expand_dims(tf.expand_dims(batch_pred, 1), 1)
+      batch_pred = tf.nn.batch_norm_with_global_normalization(
+          batch_pred, mean, variance, self.bn_beta, self.bn_gamma,
+          0.001, True)
+      self.a_pred = tf.split(0, self.seq_length, tf.squeeze(batch_pred))
+
     # Use noiser to build exploratory rollouts.
     self.a_explore = self.noiser(self.inputs, self.a_pred)
 
@@ -422,6 +457,11 @@ class PointerNetDPG(DPG):
                      if "critic/" in var.name]
     self.policy_params = policy_params
     self.critic_params = critic_params
+
+    if self.bn_actions:
+      bn_params = [self.bn_beta, self.bn_gamma]
+      self.policy_params += bn_params
+      self.critic_params += bn_params
 
     # Policy objective: maximize on-policy critic activations
     mean_critic_over_time = tf.add_n(self.critic_on) / self.seq_length

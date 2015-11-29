@@ -30,6 +30,7 @@ flags.DEFINE_float("embedding_init_range", 0.1, "")
 flags.DEFINE_integer("embedding_dim", 20, "")
 flags.DEFINE_string("policy_dims", "20", "")
 flags.DEFINE_string("critic_dims", "", "")
+flags.DEFINE_boolean("batch_normalize_actions", False, "")
 
 # Training hyperparameters
 flags.DEFINE_integer("batch_size", 64, "")
@@ -62,6 +63,8 @@ class SortingDPG(PointerNetDPG):
                                      **kwargs)
 
   def _make_params(self):
+    super(SortingDPG, self)._make_params()
+
     embedding_init = tf.random_normal_initializer(
         stddev=FLAGS.embedding_init_range)
     self.embeddings = tf.get_variable(
@@ -196,7 +199,8 @@ def main(unused_args):
   dpg_spec = util.DPGSpec(FLAGS.policy_dims, FLAGS.critic_dims)
 
   dpg = SortingDPG(mdp_spec, dpg_spec, FLAGS.embedding_dim,
-                   FLAGS.vocab_size, FLAGS.seq_length)
+                   FLAGS.vocab_size, FLAGS.seq_length,
+                   bn_actions=FLAGS.batch_normalize_actions)
   policy_update, critic_update = build_updates(dpg)
 
   with tf.Session() as sess:
