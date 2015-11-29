@@ -422,7 +422,8 @@ class PointerNetDPG(DPG):
     if self.bn_actions:
       # Compute moments over all timesteps (treat as one big batch).
       batch_pred = tf.concat(0, self.a_pred)
-      mean, variance = tf.nn.moments(batch_pred, [0])
+      mean = tf.reduce_mean(batch_pred, 0)
+      variance = tf.reduce_mean(tf.square(batch_pred - mean), 0)
 
       # TODO track running mean, avg with exponential averaging
       # in order to prepare test-time normalization value
