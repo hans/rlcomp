@@ -8,7 +8,7 @@ import pprint
 
 import numpy as np
 import tensorflow as tf
-from tensorflow.models.rnn import rnn_cell
+from tensorflow.models.rnn import rnn_cell, seq2seq
 
 from rlcomp import util
 from rlcomp.dpg import PointerNetDPG
@@ -35,6 +35,9 @@ flags.DEFINE_integer("embedding_dim", 20, "")
 flags.DEFINE_string("policy_dims", "20", "")
 flags.DEFINE_string("critic_dims", "", "")
 flags.DEFINE_boolean("batch_normalize_actions", False, "")
+
+# Autoencoder
+flags.DEFINE_integer("pretrain_autoencoder", 0, "")
 
 # Training hyperparameters
 flags.DEFINE_integer("batch_size", 64, "")
@@ -75,7 +78,7 @@ class SortingDPG(PointerNetDPG):
     embedding_init = tf.random_normal_initializer(
         stddev=FLAGS.embedding_init_range)
     self.embeddings = tf.get_variable(
-        "embeddings", (self.vocab_size, self.embedding_dim),
+        "embedding", (self.vocab_size, self.embedding_dim),
         initializer=embedding_init)
 
   def _policy_params(self):
@@ -171,15 +174,66 @@ class SortingDPG(PointerNetDPG):
 
 
 def build_updates(dpg):
+  policy_params = dpg.policy_params
+  if FLAGS.pretrain_autoencoder > 0:
+    # We already trained the encoder using autoencoder task. Remove encoder
+    # weights from optimization.
+    policy_params = [p for p in policy_params if "encoder" not in p.name]
+
   policy_optim = tf.train.AdamOptimizer(FLAGS.policy_lr)
   policy_update = policy_optim.minimize(dpg.policy_objective,
-                                        var_list=dpg.policy_params)
+                                        var_list=policy_params)
 
   critic_optim = tf.train.AdamOptimizer(FLAGS.critic_lr)
   critic_update = critic_optim.minimize(dpg.critic_objective,
                                         var_list=dpg.critic_params)
 
   return policy_update, critic_update
+
+
+def build_autoencoder(dpg):
+  hidden_dim = dpg.spec.policy_dims[0]
+  dec_cell = util.GRUCell(FLAGS.embedding_dim, hidden_dim)
+  dec_cell = rnn_cell.OutputProjectionWrapper(dec_cell,
+                                              FLAGS.vocab_size)
+
+  dec_inp = [tf.zeros_like(dpg.input_tokens[0], name="adec_inp%i" % t)
+             for t in range(dpg.seq_length)]
+  dec_out, _ = util.embedding_rnn_decoder(
+      dec_inp, dpg.encoder_states[-1], dec_cell, FLAGS.vocab_size,
+      feed_previous=True, embedding=dpg.embeddings, scope="adec")
+
+  labels = [tf.placeholder(tf.int32, shape=(None,), name="labels%i" % t)
+            for t in range(dpg.seq_length)]
+  weights = [tf.ones_like(labels_t, dtype=tf.float32) for labels_t in labels]
+
+  loss = seq2seq.sequence_loss(dec_out, labels, weights, FLAGS.vocab_size)
+
+  optimizer = tf.train.AdamOptimizer(0.01)
+  train_op = optimizer.minimize(loss) # TODO wrt what?
+
+  return labels, loss, train_op
+
+
+def pretrain_autoencoder(dpg, autoencoder, num_iters):
+  labels, loss, train_op = autoencoder
+
+  sess = tf.get_default_session()
+  for _ in xrange(num_iters):
+    X = [np.random.choice(FLAGS.vocab_size, size=(dpg.seq_length,),
+                          replace=False)
+         for _ in range(dpg.seq_length)]
+    Y = X[:]
+
+    # Dimshuffle to seq_len * batch_size
+    X = np.array(X).T
+    Y = np.array(Y).T
+
+    feed_dict = {dpg.input_tokens[t]: X[t] for t in range(dpg.seq_length)}
+    feed_dict.update({labels[t]: Y[t] for t in range(dpg.seq_length)})
+
+    _, loss_t = sess.run([train_op, loss], feed_dict)
+    print loss_t
 
 
 def gen_inputs():
@@ -243,11 +297,18 @@ def main(unused_args):
                    bn_actions=FLAGS.batch_normalize_actions)
   policy_update, critic_update = build_updates(dpg)
 
+  if FLAGS.pretrain_autoencoder > 0:
+    autoencoder = build_autoencoder(dpg)
+
   if FLAGS.verbose_summaries:
     util.add_histogram_summaries(set(dpg.policy_params + dpg.critic_params))
 
   with tf.Session() as sess:
     sess.run(tf.initialize_all_variables())
+
+    if FLAGS.pretrain_autoencoder > 0:
+      pretrain_autoencoder(dpg, autoencoder, FLAGS.pretrain_autoencoder)
+
     train(dpg, policy_update, critic_update)
 
 
