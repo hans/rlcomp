@@ -442,6 +442,12 @@ class PointerNetDPG(DPG):
     self.critic_on = self._critic(self.a_pred)
     self.critic_off = self._critic(self.a_explore, reuse=True)
 
+    # Scale critic values
+    with tf.variable_scope("critic"):
+      critic_scaler = tf.get_variable("scaler", (1,))
+      self.critic_on = [c_t * critic_scaler for c_t in self.critic_on]
+      self.critic_off = [c_t * critic_scaler for c_t in self.critic_off]
+
     self._make_q_targets()
 
   def _make_q_targets(self):
