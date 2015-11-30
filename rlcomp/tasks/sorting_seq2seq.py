@@ -21,6 +21,7 @@ flags.DEFINE_string("logdir", "/tmp/rlcomp_sorting", "")
 flags.DEFINE_boolean("verbose_summaries", False,
                     "Log very detailed summaries of parameter magnitudes, "
                     "activations, etc.")
+flags.DEFINE_integer("summary_flush_interval", 120, "")
 
 # Data parameters
 flags.DEFINE_integer("seq_length", 5, "")
@@ -161,7 +162,8 @@ def train(dpg, policy_update, critic_update):
   sess = tf.get_default_session()
 
   summary_op = tf.merge_all_summaries()
-  summary_writer = tf.train.SummaryWriter(FLAGS.logdir, sess.graph_def)
+  summary_writer = tf.train.SummaryWriter(FLAGS.logdir, sess.graph_def,
+                                          flush_secs=FLAGS.summary_flush_interval)
 
   for t in xrange(FLAGS.num_iter):
     print t
