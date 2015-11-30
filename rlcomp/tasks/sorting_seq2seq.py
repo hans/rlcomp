@@ -78,6 +78,11 @@ class SortingDPG(PointerNetDPG):
         "embeddings", (self.vocab_size, self.embedding_dim),
         initializer=embedding_init)
 
+  def _policy_params(self):
+    params = super(SortingDPG, self)._policy_params()
+    #params.append(self.embeddings)
+    return params
+
   def _make_inputs(self):
     self.input_tokens = [tf.placeholder(tf.int32, (None,))
                          for _ in range(self.seq_length)]
