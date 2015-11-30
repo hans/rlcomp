@@ -63,6 +63,9 @@ class SortingDPG(PointerNetDPG):
                **kwargs):
     self.vocab_size = vocab_size
     self.embedding_dim = embedding_dim
+
+    kwargs["noiser"] = kwargs.get("noiser", self._noise_actions)
+
     super(SortingDPG, self).__init__(mdp, spec, embedding_dim, seq_length,
                                      **kwargs)
 
@@ -83,20 +86,26 @@ class SortingDPG(PointerNetDPG):
     super(SortingDPG, self)._make_inputs()
 
   def _make_q_targets(self):
-    # Predict rewards for a_explore policy
+    # Predict rewards for each policy
     # seq_length * batch_size * 1
-    rewards = self._calc_rewards(self.a_explore)
+    self.rewards_pred, _ = self._calc_rewards(self.a_pred, name="rewards_pred")
+    self.rewards_explore, rewards_explore_unpacked = \
+        self._calc_rewards(self.a_explore, name="rewards_explore")
 
-    # Compute bootstrap Q(s_next, pi(s_next))
+    tf.scalar_summary("rewards/pred.mean", tf.reduce_mean(self.rewards_pred))
+    tf.scalar_summary("rewards/pred.max", tf.reduce_max(self.rewards_pred))
+    tf.scalar_summary("rewards/explore.mean", tf.reduce_mean(self.rewards_explore))
+
+    # Compute bootstrap Q(s_next, pi_off(s_next))
     bootstraps = [self.critic_off[t + 1]
                   for t in range(self.seq_length - 1)]
     bootstraps.append(tf.constant(0.0))
 
     self.q_targets = [rewards_t + FLAGS.gamma * bootstraps_t
                       for rewards_t, bootstraps_t
-                      in zip(rewards, bootstraps)]
+                      in zip(rewards_explore_unpacked, bootstraps)]
 
-  def _calc_rewards(self, action_list):
+  def _calc_rewards(self, action_list, name="rewards"):
     action_list = tf.transpose(self.harden_actions(action_list))
     action_list = tf.unpack(action_list, FLAGS.batch_size)
 
@@ -115,14 +124,35 @@ class SortingDPG(PointerNetDPG):
                > tf.slice(predicted, [0, 0], [-1, self.seq_length - 1]))
     rewards = tf.cast(rewards, tf.float32)
     # Add reward for t = 0, fixed as 0
-    self.rewards = tf.concat(1, [tf.zeros((FLAGS.batch_size, 1)),
-                                 rewards])
+    rewards = tf.concat(1, [tf.zeros((FLAGS.batch_size, 1)),
+                            rewards])
 
-    tf.scalar_summary("rewards.mean", tf.reduce_mean(self.rewards))
-    tf.scalar_summary("rewards.max", tf.reduce_max(self.rewards))
+    rewards = tf.transpose(rewards)
+    rewards_unpacked = tf.unpack(rewards, self.seq_length,
+                                 name=name)
 
-    return tf.unpack(tf.transpose(self.rewards), self.seq_length,
-                     name="rewards")
+    return rewards, rewards_unpacked
+
+  def _noise_actions(self, inputs, actions, name="noiser"):
+    # Permute the elements of each softmax at each timestep.
+    # Cheap approximation: permute all columns of each softmax at each timestep
+    # in the same way.
+    assert isinstance(actions, list)
+    actions_new = []
+    for actions_t in actions:
+      # With some weight favor less permutation over more permutation.
+      no_permute = tf.range(0, self.seq_length)
+      permute = tf.random_shuffle(tf.range(0, self.seq_length))
+      # TODO magic number
+      maybe_permute = tf.select(tf.random_uniform([self.seq_length]) < 0.1,
+                                permute, no_permute)
+
+      actions_new_t = tf.gather(tf.transpose(actions_t), maybe_permute)
+      actions_new_t = tf.transpose(actions_new_t)
+      actions_new.append(actions_new_t)
+
+    # TODO add some Gaussian noise?
+    return actions_new
 
   def harden_actions(self, action_list):
     ret = []
@@ -184,7 +214,7 @@ def train(dpg, policy_update, critic_update):
       inputs = make_batch(FLAGS.batch_size)
       feed_dict = {dpg.input_tokens[t]: inputs[t]
                    for t in range(FLAGS.seq_length)}
-      rewards_fetch = tf.reduce_mean(dpg.rewards)
+      rewards_fetch = tf.reduce_mean(dpg.rewards_pred)
       rewards = sess.run(rewards_fetch, feed_dict)
       print "\t", rewards
 
