@@ -479,6 +479,7 @@ class PointerNetDPG(DPG):
                 for critic_off_t, q_targets_t
                 in zip(self.critic_off, self.q_targets)]
     self.critic_objective = tf.add_n(q_errors) / self.seq_length
+    tf.scalar_summary("critic_objective", self.critic_objective)
 
     mean_critic_off = tf.reduce_mean(tf.add_n(self.critic_off)) / self.seq_length
     tf.scalar_summary("critic(a_explore).mean", mean_critic_off)
