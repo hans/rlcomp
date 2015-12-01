@@ -47,15 +47,13 @@ def critic_model(inp, actions, mdp, spec, name="critic", reuse=None,
     `batch_size` vector of Q-value predictions.
   """
 
-  # TODO remove magic numbers
-  with tf.variable_scope(name, reuse=reuse,
-                         initializer=tf.truncated_normal_initializer(stddev=0.25)):
+  with tf.variable_scope(name, reuse=reuse):
     output = util.mlp(tf.concat(1, [inp, actions]),
                       mdp.state_dim + mdp.action_dim, 1,
                       hidden=spec.critic_dims, bias_output=True,
                       track_scope=track_scope)
 
-    return tf.squeeze(tf.tanh(output))
+    return tf.squeeze(output)
 
 
 class DPG(object):
