@@ -440,12 +440,6 @@ class PointerNetDPG(DPG):
     self.critic_on = self._critic(self.a_pred)
     self.critic_off = self._critic(self.a_explore, reuse=True)
 
-    # Scale critic values
-    with tf.variable_scope("critic"):
-      critic_scaler = tf.get_variable("scaler", (1,))
-      self.critic_on = [c_t * critic_scaler for c_t in self.critic_on]
-      self.critic_off = [c_t * critic_scaler for c_t in self.critic_off]
-
     self._make_q_targets()
 
   def _make_q_targets(self):
@@ -525,13 +519,20 @@ class PointerNetDPG(DPG):
                   for inputs_t, states_t
                   in zip(self.decoder_inputs, self.decoder_states)]
 
+    # Fetch scaler parameter (shared across critics).
+    with tf.variable_scope("critic", reuse=reuse):
+      scaler = tf.get_variable("scaler", (1,))
+      if reuse is None: # First time fetching this variable; log its value
+        tf.scalar_summary("critic/scaler", scaler[0])
+
     # Evaluate Q(s, a) at each timestep.
     for t, (states_t, actions_t) in enumerate(zip(states_lst, actions_lst)):
       reuse_t = (reuse or t > 0) or None
+      critic_pre = critic_model(states_t, actions_t, self.mdp_spec,
+                                self.spec, name="critic", reuse=reuse_t)
+      critic_out = critic_pre * scaler
 
-      critic_input = tf.concat(1, [states_t, actions_t])
-      scores.append(critic_model(states_t, actions_t, self.mdp_spec,
-                                 self.spec, name="critic", reuse=reuse_t))
+      scores.append(critic_out)
 
     return scores
 
