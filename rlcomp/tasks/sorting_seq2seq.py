@@ -151,9 +151,12 @@ class SortingDPG(PointerNetDPG):
       # With some weight favor less permutation over more permutation.
       no_permute = tf.range(0, self.seq_length)
       permute = tf.random_shuffle(tf.range(0, self.seq_length))
+
       # TODO magic number
-      maybe_permute = tf.select(tf.random_uniform([self.seq_length]) < 0.1,
-                                permute, no_permute)
+      permute_strength = tf.random_uniform((1,), 0.0, 0.2)
+      maybe_permute = tf.select(
+          tf.random_uniform([self.seq_length]) < permute_strength,
+          permute, no_permute)
 
       actions_new_t = tf.gather(tf.transpose(actions_t), maybe_permute)
       actions_new_t = tf.transpose(actions_new_t)
