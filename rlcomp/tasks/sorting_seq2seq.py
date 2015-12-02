@@ -101,8 +101,10 @@ class SortingDPG(PointerNetDPG):
         self._calc_rewards(self.a_explore, name="rewards_explore")
 
     tf.scalar_summary("rewards/pred.mean", tf.reduce_mean(self.rewards_pred))
-    tf.scalar_summary("rewards/pred.max", tf.reduce_max(self.rewards_pred))
     tf.scalar_summary("rewards/explore.mean", tf.reduce_mean(self.rewards_explore))
+
+    tf.scalar_summary("rewards/pred.max_mean", tf.reduce_max(tf.reduce_mean(self.rewards_pred, 1)))
+    tf.scalar_summary("rewards/explore.max_mean", tf.reduce_max(tf.reduce_mean(self.rewards_explore, 1)))
 
     # Compute bootstrap Q(s_next, pi_off(s_next))
     bootstraps = [self.critic_off_track[t + 1]
@@ -112,6 +114,7 @@ class SortingDPG(PointerNetDPG):
     self.q_targets = [rewards_t + FLAGS.gamma * bootstraps_t
                       for rewards_t, bootstraps_t
                       in zip(rewards_explore_unpacked, bootstraps)]
+#    self.q_targets[0] = tf.Print(self.q_targets[0], [self.q_targets[1], bootstraps[1], tf.reduce_mean(self.rewards_explore)], summarize=100)
 
   def _calc_rewards(self, action_list, name="rewards"):
     action_list = tf.transpose(self.harden_actions(action_list))
@@ -124,8 +127,10 @@ class SortingDPG(PointerNetDPG):
     # "Dereference" the predicted sorts, which are index sequences.
     predicted = [tf.gather(token_matrix[i], action_list[i])
                  for i in range(FLAGS.batch_size)]
+#    predicted[0] = tf.Print(predicted[0], [predicted[0]], "predicted_" + name, summarize=100)
     predicted = tf.concat(0, [tf.expand_dims(predicted_i, 0)
                               for predicted_i in predicted])
+    #predicted = tf.Print(predicted, [predicted], "predicted_" + name, summarize=100)
 
     # Compute per-timestep rewards by evaluating constraint violations.
     rewards = (tf.slice(predicted, [0, 1], [-1, -1])

@@ -261,8 +261,8 @@ class PointerNetDPG(DPG):
     self.a_explore = self.noiser(self.inputs, self.a_pred)
 
     # Build main model: recurrently apply a critic over the entire rollout.
-    self.critic_on, self.critic_on_track = self._critic(self.a_pred)
-    self.critic_off, self.critic_off_track = self._critic(self.a_explore, reuse=True)
+    _, self.critic_on, self.critic_on_track = self._critic(self.a_pred)
+    self.critic_off_pre, self.critic_off, self.critic_off_track = self._critic(self.a_explore, reuse=True)
 
     self._make_q_targets()
 
@@ -297,9 +297,9 @@ class PointerNetDPG(DPG):
     tf.scalar_summary("critic(a_pred).mean", mean_critic)
 
     # Critic objective: minimize MSE of off-policy Q-value predictions
-    q_errors = [tf.reduce_mean(tf.square(critic_off_t - q_targets_t))
+    q_errors = [tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(critic_off_t, q_targets_t))#tf.square(critic_off_t - q_targets_t))
                 for critic_off_t, q_targets_t
-                in zip(self.critic_off, self.q_targets)]
+                in zip(self.critic_off_pre, self.q_targets)]
     self.critic_objective = tf.add_n(q_errors) / self.seq_length
     tf.scalar_summary("critic_objective", self.critic_objective)
 
@@ -336,7 +336,7 @@ class PointerNetDPG(DPG):
     return loop_fn
 
   def _critic(self, actions_lst, reuse=None):
-    scores, scores_track = [], []
+    scores_pre, scores, scores_track = [], [], []
 
     # Here our state representation is a concatenation of 1) decoder hidden
     # state and 2) decoder input.
@@ -353,21 +353,24 @@ class PointerNetDPG(DPG):
     # Evaluate Q(s, a) at each timestep.
     for t, (states_t, actions_t) in enumerate(zip(states_lst, actions_lst)):
       reuse_t = (reuse or t > 0) or None
-      critic_out = critic_model(states_t, actions_t, self.mdp_spec,
+      critic_pre = critic_model(states_t, actions_t, self.mdp_spec,
                                 self.spec, name="critic", reuse=reuse_t)
-      critic_out *= scaler
+#      critic_out *= scaler
+      critic_out = tf.sigmoid(critic_pre)
 
       # Also build a tracking model
       critic_track = critic_model(states_t, actions_t, self.mdp_spec,
                                   self.spec, name="critic_track",
                                   track_scope="%s/critic" % self.name,
                                   reuse=reuse_t)
-      critic_track *= scaler
+#      critic_track *= scaler
+      critic_track = tf.sigmoid(critic_track)
 
+      scores_pre.append(critic_pre)
       scores.append(critic_out)
       scores_track.append(critic_track)
 
-    return scores, scores_track
+    return scores_pre, scores, scores_track
 
   def harden_actions(self, action_list):
     """
