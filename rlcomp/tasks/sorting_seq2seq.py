@@ -188,15 +188,17 @@ def build_updates(dpg):
     # weights from optimization.
     policy_params = [p for p in policy_params if "encoder" not in p.name]
 
-  policy_optim = tf.train.AdamOptimizer(FLAGS.policy_lr)
+  policy_lr = tf.Variable(FLAGS.policy_lr, name="policy_lr")
+  policy_optim = tf.train.AdamOptimizer(policy_lr)
   policy_update = policy_optim.minimize(dpg.policy_objective,
                                         var_list=policy_params)
 
-  critic_optim = tf.train.AdamOptimizer(FLAGS.critic_lr)
+  critic_lr = tf.Variable(FLAGS.critic_lr, name="critic_lr")
+  critic_optim = tf.train.AdamOptimizer(critic_lr)
   critic_update = critic_optim.minimize(dpg.critic_objective,
                                         var_list=dpg.critic_params)
 
-  return policy_update, critic_update
+  return policy_lr, critic_lr, policy_update, critic_update
 
 
 def build_autoencoder(dpg):
@@ -255,13 +257,14 @@ def make_batch(batch_size):
   return inputs.T
 
 
-def train(dpg, policy_update, critic_update):
+def train(dpg, policy_lr, critic_lr, policy_update, critic_update):
   sess = tf.get_default_session()
 
   summary_op = tf.merge_all_summaries()
   summary_writer = tf.train.SummaryWriter(FLAGS.logdir, sess.graph_def,
                                           flush_secs=FLAGS.summary_flush_interval)
 
+  halved_yet = 0
   for t in xrange(FLAGS.num_iter):
     print t
 
@@ -287,6 +290,20 @@ def train(dpg, policy_update, critic_update):
                    for t in range(FLAGS.seq_length)}
       rewards_fetch = tf.reduce_mean(dpg.rewards_pred)
       rewards = sess.run(rewards_fetch, feed_dict)
+
+      # DEV
+      if rewards > 0.1 and halved_yet < 1:
+        sess.run([tf.assign(policy_lr, policy_lr * 0.5),
+                  tf.assign(critic_lr, critic_lr * 0.5)])
+        halved_yet = max(halved_yet, 1)
+      if rewards > 0.2 and halved_yet < 2:
+        sess.run([tf.assign(policy_lr, policy_lr * 0.5),
+                  tf.assign(critic_lr, critic_lr * 0.5)])
+        halved_yet = max(halved_yet, 2)
+      if rewards > 0.3 and halved_yet < 3:
+        sess.run([tf.assign(policy_lr, policy_lr * 0.5),
+                  tf.assign(critic_lr, critic_lr * 0.5)])
+        halved_yet = max(halved_yet, 3)
       print "\t", rewards
 
 
@@ -307,7 +324,7 @@ def main(unused_args):
   dpg = SortingDPG(mdp_spec, dpg_spec, FLAGS.embedding_dim,
                    FLAGS.vocab_size, FLAGS.seq_length, tau=FLAGS.tau,
                    bn_actions=FLAGS.batch_normalize_actions)
-  policy_update, critic_update = build_updates(dpg)
+  policy_lr, critic_lr, policy_update, critic_update = build_updates(dpg)
 
   if FLAGS.pretrain_autoencoder > 0:
     autoencoder = build_autoencoder(dpg)
@@ -321,7 +338,7 @@ def main(unused_args):
     if FLAGS.pretrain_autoencoder > 0:
       pretrain_autoencoder(dpg, autoencoder, FLAGS.pretrain_autoencoder)
 
-    train(dpg, policy_update, critic_update)
+    train(dpg, policy_lr, critic_lr, policy_update, critic_update)
 
 
 if __name__ == "__main__":
