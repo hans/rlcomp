@@ -158,7 +158,7 @@ class SortingDPG(PointerNetDPG):
       permute = tf.random_shuffle(tf.range(0, self.seq_length))
 
       # TODO magic number
-      permute_strength = tf.random_uniform((1,), 0.0, 0.3)
+      permute_strength = tf.maximum(0.0, tf.random_normal((1,), mean=0.3, stddev=0.2))
       maybe_permute = tf.select(
           tf.random_uniform([self.seq_length]) < permute_strength,
           permute, no_permute)
