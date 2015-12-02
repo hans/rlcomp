@@ -51,6 +51,8 @@ flags.DEFINE_float("critic_lr", 0.00001, "")
 flags.DEFINE_float("momentum", 0.9, "")
 flags.DEFINE_float("gamma", 0.95, "")
 flags.DEFINE_float("tau", 0.001, "")
+flags.DEFINE_boolean("cut_lr", True, "")
+flags.DEFINE_float("explore_strength", 0.3, "Mean of permute strength")
 
 
 class SortingDPG(PointerNetDPG):
@@ -103,8 +105,8 @@ class SortingDPG(PointerNetDPG):
     tf.scalar_summary("rewards/pred.mean", tf.reduce_mean(self.rewards_pred))
     tf.scalar_summary("rewards/explore.mean", tf.reduce_mean(self.rewards_explore))
 
-    tf.scalar_summary("rewards/pred.max_mean", tf.reduce_max(tf.reduce_mean(self.rewards_pred, 1)))
-    tf.scalar_summary("rewards/explore.max_mean", tf.reduce_max(tf.reduce_mean(self.rewards_explore, 1)))
+    tf.scalar_summary("rewards/pred.max_mean", tf.reduce_max(tf.reduce_mean(self.rewards_pred, 0)))
+    tf.scalar_summary("rewards/explore.max_mean", tf.reduce_max(tf.reduce_mean(self.rewards_explore, 0)))
 
     # Compute bootstrap Q(s_next, pi_off(s_next))
     bootstraps = [self.critic_off_track[t + 1]
@@ -157,8 +159,8 @@ class SortingDPG(PointerNetDPG):
       no_permute = tf.range(0, self.seq_length)
       permute = tf.random_shuffle(tf.range(0, self.seq_length))
 
-      # TODO magic number
-      permute_strength = tf.maximum(0.0, tf.random_normal((1,), mean=0.3, stddev=0.2))
+      permute_strength = tf.maximum(
+          0.0, tf.random_normal((1,), mean=FLAGS.explore_strength, stddev=0.2))
       maybe_permute = tf.select(
           tf.random_uniform([self.seq_length]) < permute_strength,
           permute, no_permute)
@@ -292,18 +294,20 @@ def train(dpg, policy_lr, critic_lr, policy_update, critic_update):
       rewards = sess.run(rewards_fetch, feed_dict)
 
       # DEV
-      if rewards > 0.1 and halved_yet < 1:
-        sess.run([tf.assign(policy_lr, policy_lr * 0.5),
-                  tf.assign(critic_lr, critic_lr * 0.5)])
-        halved_yet = max(halved_yet, 1)
-      if rewards > 0.2 and halved_yet < 2:
-        sess.run([tf.assign(policy_lr, policy_lr * 0.5),
-                  tf.assign(critic_lr, critic_lr * 0.5)])
-        halved_yet = max(halved_yet, 2)
-      if rewards > 0.3 and halved_yet < 3:
-        sess.run([tf.assign(policy_lr, policy_lr * 0.5),
-                  tf.assign(critic_lr, critic_lr * 0.5)])
-        halved_yet = max(halved_yet, 3)
+      if FLAGS.cut_lr:
+        if rewards > 0.1 and halved_yet < 1:
+          sess.run([tf.assign(policy_lr, policy_lr * 0.5),
+                    tf.assign(critic_lr, critic_lr * 0.5)])
+          halved_yet = max(halved_yet, 1)
+        if rewards > 0.2 and halved_yet < 2:
+          sess.run([tf.assign(policy_lr, policy_lr * 0.5),
+                    tf.assign(critic_lr, critic_lr * 0.5)])
+          halved_yet = max(halved_yet, 2)
+        if rewards > 0.3 and halved_yet < 3:
+          sess.run([tf.assign(policy_lr, policy_lr * 0.5),
+                    tf.assign(critic_lr, critic_lr * 0.5)])
+          halved_yet = max(halved_yet, 3)
+
       print "\t", rewards
 
 
