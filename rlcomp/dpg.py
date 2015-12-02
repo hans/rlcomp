@@ -326,12 +326,12 @@ class PointerNetDPG(DPG):
     """
     Args:
       attn_states: batch_size * seq_length * model_dim tensor
-      soft_ptr: batch_size * seq_length soft pointer (logits)
+      soft_ptr: batch_size * seq_length soft pointer (softmax outputs, not
+        logits)
 
     Returns:
       batch_size * model_dim weighted sum of input states
     """
-    soft_ptr = tf.nn.softmax(soft_ptr)
     weighted_mems = attn_states * tf.expand_dims(soft_ptr, 2)
     weighted_out = tf.reduce_sum(weighted_mems, 1)
     return weighted_out
