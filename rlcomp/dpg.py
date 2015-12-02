@@ -261,8 +261,8 @@ class PointerNetDPG(DPG):
     self.a_explore = self.noiser(self.inputs, self.a_pred)
 
     # Build main model: recurrently apply a critic over the entire rollout.
-    self.critic_on = self._critic(self.a_pred)
-    self.critic_off = self._critic(self.a_explore, reuse=True)
+    self.critic_on, self.critic_on_track = self._critic(self.a_pred)
+    self.critic_off, self.critic_off_track = self._critic(self.a_explore, reuse=True)
 
     self._make_q_targets()
 
@@ -310,8 +310,9 @@ class PointerNetDPG(DPG):
     tf.scalar_summary("a_pred.maxabs", tf.reduce_max(tf.abs(tf.pack(self.a_pred))))
 
   def _make_updates(self):
-    # TODO support tracking model
-    pass
+    critic_updates = util.track_model_updates(
+        "%s/critic" % self.name, "%s/critic_track" % self.name, self.tau)
+    self.track_update = critic_updates
 
   def _loop_function(self):
     """
@@ -335,7 +336,7 @@ class PointerNetDPG(DPG):
     return loop_fn
 
   def _critic(self, actions_lst, reuse=None):
-    scores = []
+    scores, scores_track = [], []
 
     # Here our state representation is a concatenation of 1) decoder hidden
     # state and 2) decoder input.
@@ -352,13 +353,21 @@ class PointerNetDPG(DPG):
     # Evaluate Q(s, a) at each timestep.
     for t, (states_t, actions_t) in enumerate(zip(states_lst, actions_lst)):
       reuse_t = (reuse or t > 0) or None
-      critic_pre = critic_model(states_t, actions_t, self.mdp_spec,
+      critic_out = critic_model(states_t, actions_t, self.mdp_spec,
                                 self.spec, name="critic", reuse=reuse_t)
-      critic_out = critic_pre * scaler
+      critic_out *= scaler
+
+      # Also build a tracking model
+      critic_track = critic_model(states_t, actions_t, self.mdp_spec,
+                                  self.spec, name="critic_track",
+                                  track_scope="%s/critic" % self.name,
+                                  reuse=reuse_t)
+      critic_track *= scaler
 
       scores.append(critic_out)
+      scores_track.append(critic_track)
 
-    return scores
+    return scores, scores_track
 
   def harden_actions(self, action_list):
     """

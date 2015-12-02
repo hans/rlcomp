@@ -105,7 +105,7 @@ class SortingDPG(PointerNetDPG):
     tf.scalar_summary("rewards/explore.mean", tf.reduce_mean(self.rewards_explore))
 
     # Compute bootstrap Q(s_next, pi_off(s_next))
-    bootstraps = [self.critic_off[t + 1]
+    bootstraps = [self.critic_off_track[t + 1]
                   for t in range(self.seq_length - 1)]
     bootstraps.append(tf.constant(0.0))
 
@@ -265,9 +265,13 @@ def train(dpg, policy_update, critic_update):
     feed_dict = {dpg.input_tokens[t]: inputs[t]
                  for t in range(FLAGS.seq_length)}
 
+    # Run a batch of rollouts and execute policy + critic update
     cost_t, summary, _, _ = sess.run(
         [dpg.critic_objective, summary_op, policy_update, critic_update],
         feed_dict)
+
+    # Now update tracking model
+    sess.run(dpg.track_update)
 
     if summary:
       summary_writer.add_summary(summary, t)
@@ -296,7 +300,7 @@ def main(unused_args):
   dpg_spec = util.DPGSpec(FLAGS.policy_dims, FLAGS.critic_dims)
 
   dpg = SortingDPG(mdp_spec, dpg_spec, FLAGS.embedding_dim,
-                   FLAGS.vocab_size, FLAGS.seq_length,
+                   FLAGS.vocab_size, FLAGS.seq_length, tau=FLAGS.tau,
                    bn_actions=FLAGS.batch_normalize_actions)
   policy_update, critic_update = build_updates(dpg)
 

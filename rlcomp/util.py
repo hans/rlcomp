@@ -1,4 +1,5 @@
 from collections import namedtuple
+import logging
 import re
 import sys
 
@@ -56,7 +57,12 @@ def track_model_updates(main_name, track_name, tau):
     track_param_name = param.op.name.replace(main_name + "/",
                                              track_name + "/")
     with tf.variable_scope(_VariableScope(True), reuse=True):
-      track_param = tf.get_variable(track_param_name)
+      try:
+        track_param = tf.get_variable(track_param_name)
+      except ValueError:
+        logging.warn("Tracking model variable %s does not exist",
+                     track_param_name)
+        continue
 
     # TODO sparse params
     update_op = tf.assign(track_param,
