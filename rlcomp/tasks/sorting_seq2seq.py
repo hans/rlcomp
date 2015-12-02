@@ -318,7 +318,7 @@ def main(unused_args):
   FLAGS.critic_dims = [int(x) for x in filter(None, FLAGS.critic_dims.split(","))]
 
   state_dim = FLAGS.policy_dims[0] * 2
-  mdp_spec = util.MDPSpec(state_dim, FLAGS.seq_length)
+  mdp_spec = util.MDPSpec(state_dim, FLAGS.policy_dims[0])
   dpg_spec = util.DPGSpec(FLAGS.policy_dims, FLAGS.critic_dims)
 
   dpg = SortingDPG(mdp_spec, dpg_spec, FLAGS.embedding_dim,

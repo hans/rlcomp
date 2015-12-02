@@ -184,7 +184,10 @@ class PointerNetDPG(DPG):
 
     self.bn_actions = bn_actions
 
+    # state: decoder hidden state + input value
     assert mdp.state_dim == spec.policy_dims[0] * 2
+    # outputs weighted sum of input memories
+    assert mdp.action_dim == spec.policy_dims[0]
 
     super(PointerNetDPG, self).__init__(mdp, spec, **kwargs)
 
@@ -240,29 +243,34 @@ class PointerNetDPG(DPG):
     # Again strip the initial state.
     self.decoder_states = dec_states[1:]
 
-    # Optional batch normalization.
-    if self.bn_actions:
-      # Compute moments over all timesteps (treat as one big batch).
-      batch_pred = tf.concat(0, self.a_pred)
-      mean = tf.reduce_mean(batch_pred, 0)
-      variance = tf.reduce_mean(tf.square(batch_pred - mean), 0)
-
-      # TODO track running mean, avg with exponential averaging
-      # in order to prepare test-time normalization value
-
-      # Resize to make BN op happy. (It is built for 4-dim CV applications.)
-      batch_pred = tf.expand_dims(tf.expand_dims(batch_pred, 1), 1)
-      batch_pred = tf.nn.batch_norm_with_global_normalization(
-          batch_pred, mean, variance, self.bn_beta, self.bn_gamma,
-          0.001, True)
-      self.a_pred = tf.split(0, self.seq_length, tf.squeeze(batch_pred))
-
     # Use noiser to build exploratory rollouts.
     self.a_explore = self.noiser(self.inputs, self.a_pred)
 
+    # Now "dereference" the soft pointers produced by the policy network.
+    a_pred_deref = self._deref_rollout(self.a_pred)
+    a_explore_deref = self._deref_rollout(self.a_explore)
+
+    # # Optional batch normalization.
+    # if self.bn_actions:
+    #   # Compute moments over all timesteps (treat as one big batch).
+    #   batch_pred = tf.concat(0, self.a_pred)
+    #   mean = tf.reduce_mean(batch_pred, 0)
+    #   variance = tf.reduce_mean(tf.square(batch_pred - mean), 0)
+
+    #   # TODO track running mean, avg with exponential averaging
+    #   # in order to prepare test-time normalization value
+
+    #   # Resize to make BN op happy. (It is built for 4-dim CV applications.)
+    #   batch_pred = tf.expand_dims(tf.expand_dims(batch_pred, 1), 1)
+    #   batch_pred = tf.nn.batch_norm_with_global_normalization(
+    #       batch_pred, mean, variance, self.bn_beta, self.bn_gamma,
+    #       0.001, True)
+    #   self.a_pred = tf.split(0, self.seq_length, tf.squeeze(batch_pred))
+
     # Build main model: recurrently apply a critic over the entire rollout.
-    _, self.critic_on, self.critic_on_track = self._critic(self.a_pred)
-    self.critic_off_pre, self.critic_off, self.critic_off_track = self._critic(self.a_explore, reuse=True)
+    _, self.critic_on, self.critic_on_track = self._critic(a_pred_deref)
+    self.critic_off_pre, self.critic_off, self.critic_off_track = \
+        self._critic(a_explore_deref, reuse=True)
 
     self._make_q_targets()
 
@@ -314,6 +322,27 @@ class PointerNetDPG(DPG):
         "%s/critic" % self.name, "%s/critic_track" % self.name, self.tau)
     self.track_update = critic_updates
 
+  def _deref_pointer(self, attn_states, soft_ptr):
+    """
+    Args:
+      attn_states: batch_size * seq_length * model_dim tensor
+      soft_ptr: batch_size * seq_length soft pointer (logits)
+
+    Returns:
+      batch_size * model_dim weighted sum of input states
+    """
+    soft_ptr = tf.nn.softmax(soft_ptr)
+    weighted_mems = attn_states * tf.expand_dims(soft_ptr, 2)
+    weighted_out = tf.reduce_sum(weighted_mems, 1)
+    return weighted_out
+
+  def _deref_rollout(self, rollout):
+    attn_states = tf.concat(1, [tf.expand_dims(states_t, 1)
+                                for states_t in self.encoder_states])
+    deref = [self._deref_pointer(attn_states, rollout_t)
+             for rollout_t in rollout]
+    return deref
+
   def _loop_function(self):
     """
     Build a function which maps from decoder outputs to decoder inputs.
@@ -327,11 +356,7 @@ class PointerNetDPG(DPG):
     # TODO: Can we use encoder inputs instead here?
     attn_states = tf.concat(1, [tf.expand_dims(states_t, 1)
                                 for states_t in self.encoder_states])
-    def loop_fn(output_t, t):
-      output_t = tf.nn.softmax(output_t)
-      weighted_mems = attn_states * tf.expand_dims(output_t, 2)
-      processed = tf.reduce_sum(weighted_mems, 1)
-      return processed
+    loop_fn = lambda output_t, t: self._deref_pointer(attn_states, output_t)
 
     return loop_fn
 
