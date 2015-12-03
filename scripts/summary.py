@@ -8,6 +8,9 @@ import tensorflow as tf
 argparser = argparse.ArgumentParser()
 argparser.add_argument("file")
 argparser.add_argument("command")
+
+argparser.add_argument("--reduction")
+
 argparser.add_argument("remaining_args", nargs=argparse.REMAINDER)
 
 
@@ -25,8 +28,7 @@ def read_field(it, field):
   for event in it:
     for val in event.summary.value:
       if val.tag == field:
-        #ret.append((event.step, val.simple_value))
-        print "%i,%s" % (event.step, val.simple_value)
+        ret.append((event.step, val.simple_value))
 
   return ret
 
@@ -38,7 +40,14 @@ def main(args):
     if len(args.remaining_args) == 0:
       list_fields(it)
     else:
-      read_field(it, args.remaining_args[0])
+      vals = [val for step, val in read_field(it, args.remaining_args[0])]
+
+      if args.reduction:
+        fn = max if args.reduction == "max" else None # TODO
+        reduced = reduce(fn, vals)
+        print reduced
+      else:
+        print "\n".join(str(val) for val in vals)
 
 
 if __name__ == "__main__":
