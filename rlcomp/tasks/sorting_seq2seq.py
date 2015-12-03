@@ -281,7 +281,7 @@ def train(dpg, policy_lr, critic_lr, policy_update, critic_update):
         feed_dict)
 
     # Now update tracking model
-    sess.run(dpg.track_update)
+    # sess.run(dpg.track_update) DEV: Not necessary
 
     if summary:
       summary_writer.add_summary(summary, t)
@@ -321,8 +321,8 @@ def main(unused_args):
   FLAGS.policy_dims = [int(x) for x in filter(None, FLAGS.policy_dims.split(","))]
   FLAGS.critic_dims = [int(x) for x in filter(None, FLAGS.critic_dims.split(","))]
 
-  state_dim = FLAGS.policy_dims[0] * 2
-  mdp_spec = util.MDPSpec(state_dim, FLAGS.policy_dims[0])
+  state_dim = FLAGS.embedding_dim#FLAGS.policy_dims[0] + FLAGS.embedding_dim #* 2
+  mdp_spec = util.MDPSpec(state_dim, FLAGS.embedding_dim)#FLAGS.policy_dims[0])
   dpg_spec = util.DPGSpec(FLAGS.policy_dims, FLAGS.critic_dims)
 
   dpg = SortingDPG(mdp_spec, dpg_spec, FLAGS.embedding_dim,

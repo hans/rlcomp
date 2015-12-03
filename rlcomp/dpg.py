@@ -185,9 +185,9 @@ class PointerNetDPG(DPG):
     self.bn_actions = bn_actions
 
     # state: decoder hidden state + input value
-    assert mdp.state_dim == spec.policy_dims[0] * 2
+    assert mdp.state_dim == self.input_dim
     # outputs weighted sum of input memories
-    assert mdp.action_dim == spec.policy_dims[0]
+    assert mdp.action_dim == self.input_dim
 
     super(PointerNetDPG, self).__init__(mdp, spec, **kwargs)
 
@@ -220,7 +220,7 @@ class PointerNetDPG(DPG):
     # Reshape encoder states into an "attention states" tensor of shape
     # `batch_size * seq_length * policy_dim`.
     attn_states = tf.concat(1, [tf.expand_dims(state_t, 1)
-                                for state_t in self.encoder_states])
+                                for state_t in self.inputs])
 
     # Build a simple GRU-powered recurrent decoder cell.
     decoder_cell = rnn_cell.GRUCell(self.spec.policy_dims[0])
@@ -338,7 +338,7 @@ class PointerNetDPG(DPG):
 
   def _deref_rollout(self, rollout):
     attn_states = tf.concat(1, [tf.expand_dims(states_t, 1)
-                                for states_t in self.encoder_states])
+                                for states_t in self.inputs])
     deref = [self._deref_pointer(attn_states, rollout_t)
              for rollout_t in rollout]
     return deref
@@ -351,11 +351,10 @@ class PointerNetDPG(DPG):
       A function which accepts two arguments `output_t, t`. `output_t` is a
       `batch_size * action_dim` tensor and `t` is an integer.
     """
-    # Use logits from output layer to compute a weighted sum of encoder memory
+    # Use logits from output layer to compute a weighted sum of encoder input
     # elements.
-    # TODO: Can we use encoder inputs instead here?
     attn_states = tf.concat(1, [tf.expand_dims(states_t, 1)
-                                for states_t in self.encoder_states])
+                                for states_t in self.inputs])
     loop_fn = lambda output_t, t: self._deref_pointer(attn_states, output_t)
 
     return loop_fn
@@ -363,33 +362,33 @@ class PointerNetDPG(DPG):
   def _critic(self, actions_lst, reuse=None):
     scores_pre, scores, scores_track = [], [], []
 
-    # Here our state representation is a concatenation of 1) decoder hidden
-    # state and 2) decoder input.
-    states_lst = [tf.concat(1, [inputs_t, states_t])
-                  for inputs_t, states_t
-                  in zip(self.decoder_inputs, self.decoder_states)]
-
     # Fetch scaler parameter (shared across critics).
     with tf.variable_scope("critic", reuse=reuse):
       scaler = tf.get_variable("scaler", (1,))
       if reuse is None: # First time fetching this variable; log its value
         tf.scalar_summary("critic/scaler", scaler[0])
 
+    prev_action = tf.zeros_like(actions_lst[0])
+
     # Evaluate Q(s, a) at each timestep.
-    for t, (states_t, actions_t) in enumerate(zip(states_lst, actions_lst)):
+    for t, actions_t in enumerate(actions_lst):
+      state_t = prev_action
+
       reuse_t = (reuse or t > 0) or None
-      critic_pre = critic_model(states_t, actions_t, self.mdp_spec,
+      critic_pre = critic_model(state_t, actions_t, self.mdp_spec,
                                 self.spec, name="critic", reuse=reuse_t)
 #      critic_out *= scaler
       critic_out = tf.sigmoid(critic_pre)
 
       # Also build a tracking model
-      critic_track = critic_model(states_t, actions_t, self.mdp_spec,
+      critic_track = critic_model(state_t, actions_t, self.mdp_spec,
                                   self.spec, name="critic_track",
                                   track_scope="%s/critic" % self.name,
                                   reuse=reuse_t)
 #      critic_track *= scaler
       critic_track = tf.sigmoid(critic_track)
+
+      prev_action = actions_t
 
       scores_pre.append(critic_pre)
       scores.append(critic_out)
