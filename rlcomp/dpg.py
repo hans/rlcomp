@@ -169,20 +169,16 @@ class PointerNetDPG(DPG):
   timestep.
   """
 
-  def __init__(self, mdp, spec, input_dim, seq_length, bn_actions=False,
-               **kwargs):
+  def __init__(self, mdp, spec, input_dim, seq_length, **kwargs):
     """
     Args:
       mdp:
       spec:
       input_dim: Dimension of input values provided to encoder (`self.inputs`)
       seq_length:
-      bn_actions: If true, batch-normalize action outputs.
     """
     self.input_dim = input_dim
     self.seq_length = seq_length
-
-    self.bn_actions = bn_actions
 
     # state: decoder hidden state + input value
     assert mdp.state_dim == self.input_dim
@@ -190,18 +186,6 @@ class PointerNetDPG(DPG):
     assert mdp.action_dim == self.input_dim
 
     super(PointerNetDPG, self).__init__(mdp, spec, **kwargs)
-
-  def _make_params(self):
-    if self.bn_actions:
-      with tf.variable_scope("bn"):
-        shape = (self.mdp_spec.action_dim,)
-        self.bn_beta = tf.Variable(tf.constant(0.0, shape=shape), name="beta")
-        self.bn_gamma = tf.Variable(tf.constant(1.0, shape=shape),
-                                    name="gamma")
-
-        # Track avg values of the beta + gamma (scale + shift)
-        tf.scalar_summary("bn_beta.mean", tf.reduce_mean(self.bn_beta))
-        tf.scalar_summary("bn_gamma.mean", tf.reduce_mean(self.bn_gamma))
 
   def _make_inputs(self):
     if not self.inputs:
@@ -250,23 +234,6 @@ class PointerNetDPG(DPG):
     a_pred_deref = self._deref_rollout(self.a_pred)
     a_explore_deref = self._deref_rollout(self.a_explore)
 
-    # # Optional batch normalization.
-    # if self.bn_actions:
-    #   # Compute moments over all timesteps (treat as one big batch).
-    #   batch_pred = tf.concat(0, self.a_pred)
-    #   mean = tf.reduce_mean(batch_pred, 0)
-    #   variance = tf.reduce_mean(tf.square(batch_pred - mean), 0)
-
-    #   # TODO track running mean, avg with exponential averaging
-    #   # in order to prepare test-time normalization value
-
-    #   # Resize to make BN op happy. (It is built for 4-dim CV applications.)
-    #   batch_pred = tf.expand_dims(tf.expand_dims(batch_pred, 1), 1)
-    #   batch_pred = tf.nn.batch_norm_with_global_normalization(
-    #       batch_pred, mean, variance, self.bn_beta, self.bn_gamma,
-    #       0.001, True)
-    #   self.a_pred = tf.split(0, self.seq_length, tf.squeeze(batch_pred))
-
     # Build main model: recurrently apply a critic over the entire rollout.
     _, self.critic_on, self.critic_on_track = self._critic(a_pred_deref)
     self.critic_off_pre, self.critic_off, self.critic_off_track = \
@@ -290,11 +257,6 @@ class PointerNetDPG(DPG):
                      if "critic/" in var.name]
     self.policy_params = policy_params
     self.critic_params = critic_params
-
-    if self.bn_actions:
-      bn_params = [self.bn_beta, self.bn_gamma]
-      self.policy_params += bn_params
-      self.critic_params += bn_params
 
     # Policy objective: maximize on-policy critic activations
     mean_critic_over_time = tf.add_n(self.critic_on) / self.seq_length

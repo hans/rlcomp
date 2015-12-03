@@ -332,8 +332,7 @@ def main(unused_args):
   dpg_spec = util.DPGSpec(FLAGS.policy_dims, FLAGS.critic_dims)
 
   dpg = SortingDPG(mdp_spec, dpg_spec, FLAGS.embedding_dim,
-                   FLAGS.vocab_size, FLAGS.seq_length, tau=FLAGS.tau,
-                   bn_actions=FLAGS.batch_normalize_actions)
+                   FLAGS.vocab_size, FLAGS.seq_length, tau=FLAGS.tau)
   policy_lr, critic_lr, policy_update, critic_update = build_updates(dpg)
 
   if FLAGS.pretrain_autoencoder > 0:
