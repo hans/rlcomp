@@ -21,6 +21,10 @@ flags.DEFINE_string("logdir", "/tmp/rlcomp_sorting", "")
 flags.DEFINE_boolean("verbose_summaries", False,
                     "Log very detailed summaries of parameter magnitudes, "
                     "activations, etc.")
+
+flags.DEFINE_integer("eval_interval", 9999,
+                     "Evaluate policy without exploration every $n$ "
+                     "iterations.")
 flags.DEFINE_integer("summary_flush_interval", 120, "")
 
 # Data parameters
@@ -43,9 +47,6 @@ flags.DEFINE_integer("pretrain_autoencoder", 0, "")
 flags.DEFINE_integer("batch_size", 64, "")
 flags.DEFINE_integer("buffer_size", 10 ** 6, "")
 flags.DEFINE_integer("num_iter", 10000, "")
-flags.DEFINE_integer("eval_interval", 9999,
-                     "Evaluate policy without exploration every $n$ "
-                     "iterations.")
 flags.DEFINE_float("policy_lr", 0.0001, "")
 flags.DEFINE_float("critic_lr", 0.00001, "")
 flags.DEFINE_float("momentum", 0.9, "")
@@ -265,6 +266,7 @@ def train(dpg, policy_lr, critic_lr, policy_update, critic_update):
   summary_op = tf.merge_all_summaries()
   summary_writer = tf.train.SummaryWriter(FLAGS.logdir, sess.graph_def,
                                           flush_secs=FLAGS.summary_flush_interval)
+  saver = tf.train.Saver()
 
   halved_yet = 0
   for t in xrange(FLAGS.num_iter):
@@ -309,6 +311,10 @@ def train(dpg, policy_lr, critic_lr, policy_update, critic_update):
           halved_yet = max(halved_yet, 3)
 
       print "\t", rewards
+
+    if t % FLAGS.eval_interval == 0 or t + 1 == FLAGS.num_iter:
+      save_path = os.path.join(FLAGS.logdir, "model.ckpt")
+      saver.save(sess, save_path, global_step=t)
 
 
 def main(unused_args):
