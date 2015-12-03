@@ -113,7 +113,8 @@ def ptr_net_decoder(decoder_inputs, initial_state, attention_states, cell,
       seen_inputs.append(inp)
 
       # Merge input and previous attentions into one vector of the right size.
-      x = linear.linear([inp] + attns, cell.input_size, True)
+      x = linear.linear([inp] + attns, cell.input_size, True,
+                        scope="inp_to_hidden")
 
       # Run the RNN.
       cell_output, new_state = cell(x, states[-1])

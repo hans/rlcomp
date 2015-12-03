@@ -212,7 +212,7 @@ class PointerNetDPG(DPG):
   def _make_graph(self):
     # Encode sequence.
     # TODO: MultilayerRNN?
-    encoder_cell = rnn_cell.GRUCell(self.spec.policy_dims[0])
+    encoder_cell = util.GRUCell(self.input_dim, self.spec.policy_dims[0])
     _, self.encoder_states = rnn.rnn(encoder_cell, self.inputs,
                                      dtype=tf.float32, scope="encoder")
     assert len(self.encoder_states) == self.seq_length # DEV
@@ -223,7 +223,7 @@ class PointerNetDPG(DPG):
                                 for state_t in self.inputs])
 
     # Build a simple GRU-powered recurrent decoder cell.
-    decoder_cell = rnn_cell.GRUCell(self.spec.policy_dims[0])
+    decoder_cell = util.GRUCell(self.input_dim, self.spec.policy_dims[0])
 
     # Prepare dummy encoder input. This will only be used on the first
     # timestep; in subsequent timesteps, the `loop_function` we provide
@@ -237,7 +237,7 @@ class PointerNetDPG(DPG):
     # Build pointer-network decoder.
     self.a_pred, dec_states, dec_inputs = ptr_net_decoder(
         dec_inp, self.encoder_states[-1], attn_states, decoder_cell,
-        loop_function=None, scope="decoder")
+        loop_function=self._loop_function(), scope="decoder")
     # Store dynamically calculated inputs -- critic may want to use these
     self.decoder_inputs = dec_inputs
     # Again strip the initial state.
