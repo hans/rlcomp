@@ -17,7 +17,10 @@ from rlcomp.dpg import PointerNetDPG
 flags = tf.flags
 FLAGS = flags.FLAGS
 
+flags.DEFINE_string("mode", "train", "`train` or `test`")
 flags.DEFINE_string("logdir", "/tmp/rlcomp_sorting", "")
+flags.DEFINE_string("checkpoint_path", None,
+                    "Path to model checkpoint. Used only in `test` mode")
 flags.DEFINE_boolean("verbose_summaries", False,
                     "Log very detailed summaries of parameter magnitudes, "
                     "activations, etc.")
@@ -317,6 +320,21 @@ def train(dpg, policy_lr, critic_lr, policy_update, critic_update):
       saver.save(sess, save_path, global_step=t)
 
 
+def test(dpg):
+  sess = tf.get_default_session()
+
+  mean_reward = tf.reduce_mean(dpg.rewards_pred)
+
+  for t in xrange(FLAGS.num_iter):
+    inputs = make_batch(FLAGS.batch_size)
+    feed_dict = {dpg.input_tokens[t]: inputs[t]
+                 for t in range(FLAGS.seq_length)}
+
+    # Run a batch of rollouts and calculate average reward.
+    rewards_t = sess.run(mean_reward, feed_dict)
+    print rewards_t
+
+
 def main(unused_args):
   try:
     os.makedirs(FLAGS.logdir)
@@ -333,21 +351,30 @@ def main(unused_args):
 
   dpg = SortingDPG(mdp_spec, dpg_spec, FLAGS.embedding_dim,
                    FLAGS.vocab_size, FLAGS.seq_length, tau=FLAGS.tau)
-  policy_lr, critic_lr, policy_update, critic_update = build_updates(dpg)
 
-  if FLAGS.pretrain_autoencoder > 0:
-    autoencoder = build_autoencoder(dpg)
-
-  if FLAGS.verbose_summaries:
-    util.add_histogram_summaries(set(dpg.policy_params + dpg.critic_params))
-
-  with tf.Session() as sess:
-    sess.run(tf.initialize_all_variables())
+  if FLAGS.mode == "train":
+    policy_lr, critic_lr, policy_update, critic_update = build_updates(dpg)
 
     if FLAGS.pretrain_autoencoder > 0:
-      pretrain_autoencoder(dpg, autoencoder, FLAGS.pretrain_autoencoder)
+      autoencoder = build_autoencoder(dpg)
 
-    train(dpg, policy_lr, critic_lr, policy_update, critic_update)
+    if FLAGS.verbose_summaries:
+      util.add_histogram_summaries(set(dpg.policy_params + dpg.critic_params))
+
+    with tf.Session() as sess:
+      sess.run(tf.initialize_all_variables())
+
+      if FLAGS.pretrain_autoencoder > 0:
+        pretrain_autoencoder(dpg, autoencoder, FLAGS.pretrain_autoencoder)
+
+      train(dpg, policy_lr, critic_lr, policy_update, critic_update)
+
+  elif FLAGS.mode == "test":
+    with tf.Session() as sess:
+      saver = tf.train.Saver()
+      saver.restore(sess, FLAGS.checkpoint_path)
+
+      test(dpg)
 
 
 if __name__ == "__main__":
