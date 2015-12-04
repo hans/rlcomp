@@ -169,7 +169,8 @@ class PointerNetDPG(DPG):
   timestep.
   """
 
-  def __init__(self, mdp, spec, input_dim, seq_length, **kwargs):
+  def __init__(self, mdp, spec, input_dim, seq_length, real_lengths=None,
+               **kwargs):
     """
     Args:
       mdp:
@@ -180,6 +181,8 @@ class PointerNetDPG(DPG):
     self.input_dim = input_dim
     self.seq_length = seq_length
 
+    self.real_lengths = real_lengths
+
     # state: decoder hidden state + input value
     assert mdp.state_dim == self.input_dim
     # outputs weighted sum of input memories
@@ -189,8 +192,12 @@ class PointerNetDPG(DPG):
 
   def _make_inputs(self):
     if not self.inputs:
-      self.inputs = [tf.placeholder(tf.float32, (None, self.input_dim))
-                     for _ in range(self.seq_length)]
+      self.inputs = [tf.placeholder(tf.float32, (None, self.input_dim),
+                                    name="inputs_%i" % t)
+                     for t in range(self.seq_length)]
+    if not self.real_lengths:
+      self.real_lengths = tf.placeholder(tf.int32, (None,),
+                                         name="real_lengths")
     self.tau = self.tau or tf.placeholder(tf.float32, (1,), name="tau")
 
   def _make_graph(self):
@@ -250,6 +257,18 @@ class PointerNetDPG(DPG):
     return [var for var in tf.all_variables()
             if "encoder/" in var.name or "decoder/" in var.name]
 
+  def _zero_mask(self, seq, expand_dims=False):
+    """
+    Zero out examples in a sequence of batches based on input `real_lengths`.
+
+    Used to zero-weight objectives, etc. for examples shorter than the maximum
+    length.
+    """
+    masks = [tf.to_float(self.real_lengths > t) for t, seq_t in enumerate(seq)]
+    if expand_dims:
+      masks = [tf.expand_dims(mask_t, 1) for mask_t in masks]
+    return [mask_t * seq_t for mask_t, seq_t in zip(masks, seq)]
+
   def _make_objectives(self):
     # TODO: Hacky, will cause clashes if multiple DPG instances.
     policy_params = self._policy_params()
@@ -258,8 +277,17 @@ class PointerNetDPG(DPG):
     self.policy_params = policy_params
     self.critic_params = critic_params
 
+    # Calculate zero-masked outputs based on the real length of each example
+    # sequence.
+    critic_on = self._zero_mask(self.critic_on)
+    critic_off = self._zero_mask(self.critic_off)
+    a_pred = self._zero_mask(self.a_pred, True)
+
+    # Denominator to normalize objective expressions by example length
+    length_norm = tf.cast(tf.expand_dims(self.real_lengths, 1), tf.float32)
+
     # Policy objective: maximize on-policy critic activations
-    mean_critic_over_time = tf.add_n(self.critic_on) / self.seq_length
+    mean_critic_over_time = tf.add_n(critic_on) / length_norm
     mean_critic = tf.reduce_mean(mean_critic_over_time)
     self.policy_objective = -mean_critic
 
@@ -267,17 +295,19 @@ class PointerNetDPG(DPG):
     tf.scalar_summary("critic(a_pred).mean", mean_critic)
 
     # Critic objective: minimize MSE of off-policy Q-value predictions
-    q_errors = [tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(critic_off_t, q_targets_t))#tf.square(critic_off_t - q_targets_t))
+    q_errors = [tf.nn.sigmoid_cross_entropy_with_logits(critic_off_t, q_targets_t)
+                #tf.square(critic_off_t - q_targets_t))
                 for critic_off_t, q_targets_t
                 in zip(self.critic_off_pre, self.q_targets)]
-    self.critic_objective = tf.add_n(q_errors) / self.seq_length
+    q_errors = tf.add_n(self._zero_mask(q_errors)) / length_norm
+    self.critic_objective = tf.reduce_mean(q_errors)
     tf.scalar_summary("critic_objective", self.critic_objective)
 
-    mean_critic_off = tf.reduce_mean(tf.add_n(self.critic_off)) / self.seq_length
+    mean_critic_off = tf.reduce_mean(tf.add_n(critic_off) / length_norm)
     tf.scalar_summary("critic(a_explore).mean", mean_critic_off)
 
-    tf.scalar_summary("a_pred.mean", tf.reduce_mean(tf.add_n(self.a_pred)) / self.seq_length)
-    tf.scalar_summary("a_pred.maxabs", tf.reduce_max(tf.abs(tf.pack(self.a_pred))))
+    tf.scalar_summary("a_pred.mean", tf.reduce_mean(tf.add_n(a_pred) / length_norm))
+    tf.scalar_summary("a_pred.maxabs", tf.reduce_max(tf.abs(tf.pack(a_pred))))
 
   def _make_updates(self):
     critic_updates = util.track_model_updates(

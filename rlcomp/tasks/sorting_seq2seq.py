@@ -33,6 +33,7 @@ flags.DEFINE_integer("summary_flush_interval", 120, "")
 # Data parameters
 flags.DEFINE_integer("seq_length", 5, "")
 flags.DEFINE_integer("vocab_size", 10, "")
+flags.DEFINE_boolean("variable_length", False, "")
 
 # Initialization hyperparameters
 flags.DEFINE_float("embedding_init_range", 0.1, "")
@@ -84,7 +85,7 @@ class SortingDPG(PointerNetDPG):
     embedding_init = tf.random_normal_initializer(
         stddev=FLAGS.embedding_init_range)
     self.embeddings = tf.get_variable(
-        "embedding", (self.vocab_size, self.embedding_dim),
+        "embedding", (self.vocab_size + 1, self.embedding_dim),
         initializer=embedding_init)
 
   def _policy_params(self):
@@ -120,7 +121,6 @@ class SortingDPG(PointerNetDPG):
     self.q_targets = [rewards_t + FLAGS.gamma * bootstraps_t
                       for rewards_t, bootstraps_t
                       in zip(rewards_explore_unpacked, bootstraps)]
-#    self.q_targets[0] = tf.Print(self.q_targets[0], [self.q_targets[1], bootstraps[1], tf.reduce_mean(self.rewards_explore)], summarize=100)
 
   def _calc_rewards(self, action_list, name="rewards"):
     action_list = tf.transpose(self.harden_actions(action_list))
@@ -252,15 +252,28 @@ def pretrain_autoencoder(dpg, autoencoder, num_iters):
     print loss_t
 
 
-def gen_inputs():
-  xs = np.random.choice(FLAGS.vocab_size, replace=False,
-                        size=FLAGS.seq_length)
-  return xs
+def make_batch(batch_size, seq_length, variable_length=False):
+  if variable_length:
+    length_fn = lambda: seq_length
+  else:
+    length_fn = lambda: np.random.uniform(2, seq_length + 1)
 
+  batch = np.empty((batch_size, seq_length), dtype=np.int32)
+  lengths = np.empty((batch_size,), dtype=np.int32)
+  vocab = range(1, FLAGS.vocab_size + 1)
 
-def make_batch(batch_size):
-  inputs = np.array([gen_inputs() for _ in range(batch_size)])
-  return inputs.T
+  for i in xrange(batch_size):
+    length_i = (np.random.randint(2, seq_length + 1) if variable_length
+                else FLAGS.seq_length)
+    xs_i = np.random.choice(vocab, replace=False, size=length_i)
+
+    # Pad at left.
+    xs_i = np.concatenate([[0] * (FLAGS.seq_length - length_i), xs_i])
+
+    batch[i] = xs_i
+    lengths[i] = length_i
+
+  return batch.T, lengths
 
 
 def train(dpg, policy_lr, critic_lr, policy_update, critic_update):
@@ -276,9 +289,11 @@ def train(dpg, policy_lr, critic_lr, policy_update, critic_update):
     print t
 
     # inputs: seq_length * batch_size
-    inputs = make_batch(FLAGS.batch_size)
+    inputs, lengths = make_batch(FLAGS.batch_size, FLAGS.seq_length,
+                                 FLAGS.variable_length)
     feed_dict = {dpg.input_tokens[t]: inputs[t]
                  for t in range(FLAGS.seq_length)}
+    feed_dict[dpg.real_lengths] = lengths
 
     # Run a batch of rollouts and execute policy + critic update
     cost_t, summary, _, _ = sess.run(
@@ -292,9 +307,12 @@ def train(dpg, policy_lr, critic_lr, policy_update, critic_update):
       summary_writer.add_summary(summary, t)
 
     if t % FLAGS.eval_interval == 0:
-      inputs = make_batch(FLAGS.batch_size)
+      inputs, lengths = make_batch(FLAGS.batch_size, FLAGS.seq_length,
+                                   FLAGS.variable_length)
       feed_dict = {dpg.input_tokens[t]: inputs[t]
                    for t in range(FLAGS.seq_length)}
+      feed_dict[dpg.real_lengths] = lengths
+
       rewards_fetch = tf.reduce_mean(dpg.rewards_pred)
       rewards = sess.run(rewards_fetch, feed_dict)
 
@@ -326,9 +344,11 @@ def test(dpg):
   mean_reward = tf.reduce_mean(dpg.rewards_pred)
 
   for t in xrange(FLAGS.num_iter):
-    inputs = make_batch(FLAGS.batch_size)
+    inputs, lengths = make_batch(FLAGS.batch_size, FLAGS.seq_length,
+                                 FLAGS.variable_length)
     feed_dict = {dpg.input_tokens[t]: inputs[t]
                  for t in range(FLAGS.seq_length)}
+    feed_dict[dpg.real_lengths] = lengths
 
     # Run a batch of rollouts and calculate average reward.
     rewards_t = sess.run(mean_reward, feed_dict)
