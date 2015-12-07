@@ -107,11 +107,20 @@ class SortingDPG(PointerNetDPG):
     self.rewards_explore, rewards_explore_unpacked = \
         self._calc_rewards(self.a_explore, name="rewards_explore")
 
-    tf.scalar_summary("rewards/pred.mean", tf.reduce_mean(self.rewards_pred))
-    tf.scalar_summary("rewards/explore.mean", tf.reduce_mean(self.rewards_explore))
+    reward_normalizer = tf.to_float(self.real_lengths) / self.seq_length
+    tf.scalar_summary("rewards/pred.mean",
+                      tf.reduce_mean(
+                        tf.reduce_mean(self.rewards_pred, 0) / reward_normalizer))
+    tf.scalar_summary("rewards/explore.mean",
+                      tf.reduce_mean(
+                        tf.reduce_mean(self.rewards_explore, 0) / self.seq_length / reward_normalizer))
 
-    tf.scalar_summary("rewards/pred.max_mean", tf.reduce_max(tf.reduce_mean(self.rewards_pred, 0)))
-    tf.scalar_summary("rewards/explore.max_mean", tf.reduce_max(tf.reduce_mean(self.rewards_explore, 0)))
+    tf.scalar_summary("rewards/pred.max_mean",
+                      tf.reduce_max(
+                        tf.reduce_sum(self.rewards_pred, 0) / self.seq_length / reward_normalizer))
+    tf.scalar_summary("rewards/explore.max_mean",
+                      tf.reduce_max(
+                        tf.reduce_sum(self.rewards_explore, 0) / self.seq_length / reward_normalizer))
 
     # Compute bootstrap Q(s_next, pi_off(s_next))
     bootstraps = [self.critic_off_track[t + 1]
@@ -145,8 +154,14 @@ class SortingDPG(PointerNetDPG):
     # Add reward for t = 0, fixed as 0
     rewards = tf.concat(1, [tf.zeros((FLAGS.batch_size, 1)),
                             rewards])
-
     rewards = tf.transpose(rewards)
+
+    # Zero-mask reward values at end of sequence for shorter sequences
+    reward_mask = tf.pack([self.real_lengths > t
+                           for t in range(self.seq_length)])
+    rewards = tf.select(reward_mask, rewards,
+                        tf.zeros((self.seq_length, FLAGS.batch_size)))
+
     rewards_unpacked = tf.unpack(rewards, self.seq_length,
                                  name=name)
 
