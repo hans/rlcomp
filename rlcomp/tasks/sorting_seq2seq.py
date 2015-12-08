@@ -356,7 +356,11 @@ def train(dpg, policy_lr, critic_lr, policy_update, critic_update):
 def test(dpg):
   sess = tf.get_default_session()
 
-  mean_reward = tf.reduce_mean(dpg.rewards_pred)
+  mean_reward = tf.reduce_mean(
+      tf.reduce_mean(dpg.rewards_pred, 0)
+      / (tf.to_float(dpg.real_lengths) / dpg.seq_length))
+  seq_pred = tf.transpose(
+      tf.pack([tf.argmax(pred_t, 1) for pred_t in dpg.a_pred]))
 
   for t in xrange(FLAGS.num_iter):
     inputs, lengths = make_batch(FLAGS.batch_size, FLAGS.seq_length,
