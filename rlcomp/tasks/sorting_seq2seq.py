@@ -9,6 +9,7 @@ import pprint
 import numpy as np
 import tensorflow as tf
 from tensorflow.models.rnn import rnn_cell, seq2seq
+from tensorflow.python.framework import ops
 
 from rlcomp import util
 from rlcomp.dpg import PointerNetDPG
@@ -84,9 +85,10 @@ class SortingDPG(PointerNetDPG):
 
     embedding_init = tf.random_normal_initializer(
         stddev=FLAGS.embedding_init_range)
-    self.embeddings = tf.get_variable(
-        "embedding", (self.vocab_size + 1, self.embedding_dim),
-        initializer=embedding_init)
+    with ops.device("/cpu:0"):
+      self.embeddings = tf.get_variable(
+          "embedding", (self.vocab_size + 1, self.embedding_dim),
+          initializer=embedding_init)
 
   def _policy_params(self):
     params = super(SortingDPG, self)._policy_params()
