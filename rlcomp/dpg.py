@@ -228,7 +228,8 @@ class PointerNetDPG(DPG):
     # Build pointer-network decoder.
     self.a_pred, dec_states, dec_inputs = ptr_net_decoder(
         dec_inp, self.encoder_states[-1], attn_states, decoder_cell,
-        loop_function=self._loop_function(), scope="decoder")
+        loop_function=self._loop_function(), real_lengths=self.real_lengths,
+        scope="decoder")
     # Store dynamically calculated inputs -- critic may want to use these
     self.decoder_inputs = dec_inputs
     # Again strip the initial state.

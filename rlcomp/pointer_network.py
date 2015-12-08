@@ -7,7 +7,7 @@ from tensorflow.models.rnn import linear
 
 def ptr_net_decoder(decoder_inputs, initial_state, attention_states, cell,
                     num_heads=1, loop_function=None, dtype=tf.float32,
-                    scope=None):
+                    real_lengths=None, scope=None):
   """
   Pointer network decoder.
 
@@ -30,6 +30,7 @@ def ptr_net_decoder(decoder_inputs, initial_state, attention_states, cell,
         * i is an integer, the step number (when advanced control is needed),
         * next is a 2D Tensor of shape [batch_size x cell.input_size].
     dtype: The dtype to use for the RNN initial state (default: tf.float32).
+    real_lengths: TODO
     scope: VariableScope for the created subgraph; default: "attention_decoder".
   Returns:
     outputs: A list of the same length as decoder_inputs of 2D Tensors of shape
@@ -100,6 +101,13 @@ def ptr_net_decoder(decoder_inputs, initial_state, attention_states, cell,
     for a in attns:  # Ensure the second shape of attention vectors is set.
       a.set_shape([None, attn_size])
 
+    # We need to mask outputs for short sequences which don't require attention
+    # over the entire unrolled input sequence graph.
+    if real_lengths is not None:
+      output_mask = tf.concat(1, [tf.expand_dims(real_lengths > attn_length - t, 1)
+                                  for t in range(len(decoder_inputs))])
+      output_mask_val = tf.zeros(tf.pack([batch_size, attn_length]))
+
     # Begin recurrence.
     for i in xrange(len(decoder_inputs)):
       if i > 0:
@@ -122,6 +130,12 @@ def ptr_net_decoder(decoder_inputs, initial_state, attention_states, cell,
 
       # Run the attention mechanism.
       output = attention(cell_output)
+
+      # Mask outputs for shorter sequences.
+      if real_lengths is not None:
+        output = tf.select(output_mask, output, output_mask_val)
+        # Renormalize
+        output = output / tf.reduce_sum(output, 1, keep_dims=True)
 
       if loop_function is not None:
         # We do not propagate gradients over the loop function.
