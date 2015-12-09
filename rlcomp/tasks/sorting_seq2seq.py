@@ -109,20 +109,20 @@ class SortingDPG(PointerNetDPG):
     self.rewards_explore, rewards_explore_unpacked = \
         self._calc_rewards(self.a_explore, name="rewards_explore")
 
-    reward_normalizer = tf.to_float(self.real_lengths) / self.seq_length
+    reward_normalizer = tf.to_float(self.real_lengths) - 1.0
     tf.scalar_summary("rewards/pred.mean",
                       tf.reduce_mean(
-                        tf.reduce_mean(self.rewards_pred, 0) / reward_normalizer))
+                        tf.reduce_sum(self.rewards_pred, 0) / reward_normalizer))
     tf.scalar_summary("rewards/explore.mean",
                       tf.reduce_mean(
-                        tf.reduce_mean(self.rewards_explore, 0) / self.seq_length / reward_normalizer))
+                        tf.reduce_sum(self.rewards_explore, 0) / reward_normalizer))
 
     tf.scalar_summary("rewards/pred.max_mean",
                       tf.reduce_max(
-                        tf.reduce_sum(self.rewards_pred, 0) / self.seq_length / reward_normalizer))
+                        tf.reduce_sum(self.rewards_pred, 0) / reward_normalizer))
     tf.scalar_summary("rewards/explore.max_mean",
                       tf.reduce_max(
-                        tf.reduce_sum(self.rewards_explore, 0) / self.seq_length / reward_normalizer))
+                        tf.reduce_sum(self.rewards_explore, 0) / reward_normalizer))
 
     # Compute bootstrap Q(s_next, pi_off(s_next))
     bootstraps = [self.critic_off_track[t + 1]
@@ -359,8 +359,8 @@ def test(dpg):
   sess = tf.get_default_session()
 
   mean_reward = tf.reduce_mean(
-      tf.reduce_mean(dpg.rewards_pred, 0)
-      / (tf.to_float(dpg.real_lengths) / dpg.seq_length))
+      tf.reduce_sum(dpg.rewards_pred, 0)
+      / (tf.to_float(dpg.real_lengths) - 1.0))
   seq_pred = tf.transpose(
       tf.pack([tf.argmax(pred_t, 1) for pred_t in dpg.a_pred]))
 
@@ -373,7 +373,9 @@ def test(dpg):
 
     # Run a batch of rollouts and calculate average reward.
     rewards_t = sess.run(mean_reward, feed_dict)
+    #rewards_t, seq_t = sess.run([mean_reward, seq_pred], feed_dict)
     print rewards_t
+    #pprint.pprint(zip(inputs.T, seq_t))
 
 
 def main(unused_args):
