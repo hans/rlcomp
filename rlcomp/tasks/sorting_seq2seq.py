@@ -58,6 +58,7 @@ flags.DEFINE_float("momentum", 0.9, "")
 flags.DEFINE_float("gamma", 0.95, "")
 flags.DEFINE_float("tau", 0.001, "")
 flags.DEFINE_boolean("cut_lr", True, "")
+flags.DEFINE_float("clip_global_norm", 100.0, "")
 flags.DEFINE_float("explore_strength", 0.3, "Mean of permute strength")
 
 
@@ -212,16 +213,31 @@ def build_updates(dpg):
     policy_params = [p for p in policy_params if "encoder" not in p.name]
 
   policy_lr = tf.Variable(FLAGS.policy_lr, name="policy_lr")
-  policy_optim = tf.train.AdamOptimizer(policy_lr)
+  policy_optim = ClippingAdamOptimizer(policy_lr, name="policy_opt")
   policy_update = policy_optim.minimize(dpg.policy_objective,
                                         var_list=policy_params)
 
   critic_lr = tf.Variable(FLAGS.critic_lr, name="critic_lr")
-  critic_optim = tf.train.AdamOptimizer(critic_lr)
+  critic_optim = ClippingAdamOptimizer(critic_lr, name="critic_opt")
   critic_update = critic_optim.minimize(dpg.critic_objective,
                                         var_list=dpg.critic_params)
 
   return policy_lr, critic_lr, policy_update, critic_update
+
+
+class ClippingAdamOptimizer(tf.train.AdamOptimizer):
+
+  def compute_gradients(self, *args, **kwargs):
+    grads_and_vars = super(ClippingAdamOptimizer, self).compute_gradients(*args, **kwargs)
+
+    with tf.variable_scope(self._name):
+      grads = [grad for grad, _ in grads_and_vars]
+      vars_ = [var for _, var in grads_and_vars]
+      clipped_grads, global_norm = tf.clip_by_global_norm(
+          grads, FLAGS.clip_global_norm)
+
+      tf.scalar_summary("%s/global_norm" % self._name, global_norm)
+      return zip(clipped_grads, vars_)
 
 
 def build_autoencoder(dpg):
