@@ -285,7 +285,7 @@ class PointerNetDPG(DPG):
     a_pred = self._zero_mask(self.a_pred, True)
 
     # Denominator to normalize objective expressions by example length
-    length_norm = tf.cast(tf.expand_dims(self.real_lengths, 1), tf.float32)
+    length_norm = tf.to_float(tf.expand_dims(self.real_lengths, 1))
 
     # Policy objective: maximize on-policy critic activations
     mean_critic_over_time = tf.add_n(critic_on) / length_norm
@@ -304,6 +304,7 @@ class PointerNetDPG(DPG):
     self.critic_objective = tf.reduce_mean(q_errors)
     tf.scalar_summary("critic_objective", self.critic_objective)
 
+    # TODO update these to work with variable-length setting
     mean_critic_off = tf.reduce_mean(tf.add_n(critic_off) / length_norm)
     tf.scalar_summary("critic(a_explore).mean", mean_critic_off)
 
