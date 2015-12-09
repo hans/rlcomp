@@ -104,7 +104,7 @@ def ptr_net_decoder(decoder_inputs, initial_state, attention_states, cell,
     # We need to mask outputs for short sequences which don't require attention
     # over the entire unrolled input sequence graph.
     if real_lengths is not None:
-      output_mask = tf.concat(1, [tf.expand_dims(real_lengths > attn_length - t, 1)
+      output_mask = tf.concat(1, [tf.expand_dims(real_lengths >= attn_length - t, 1)
                                   for t in range(len(decoder_inputs))])
       output_mask_val = tf.zeros(tf.pack([batch_size, attn_length]))
 
